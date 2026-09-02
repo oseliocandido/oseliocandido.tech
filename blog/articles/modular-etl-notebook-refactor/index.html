@@ -68,7 +68,7 @@
                     <div class="flow-diagram__arrow"></div>
                     <div class="flow-diagram__node">Restructure by entity</div>
                     <div class="flow-diagram__arrow"></div>
-                    <div class="flow-diagram__node">bus/fact_replenishment/<small>data.py + transformations.py, one folder</small></div>
+                    <div class="flow-diagram__node">bus/fact_order_fulfillment/<small>data.py + transformations.py, one folder</small></div>
                 </div>
 
                 <h2>The Problem</h2>
@@ -104,12 +104,12 @@
                 </p>
 
                 <ul>
-                    <li><strong>Two-file navigation for one-line changes.</strong> Adding a column to <code>fact_replenishment</code> meant opening the 639-line file to find its eleven-line definition block, then opening the 394-line file to find its transformation logic somewhere else in file order.</li>
+                    <li><strong>Two-file navigation for one-line changes.</strong> Adding a column to <code>fact_order_fulfillment</code> meant opening the 639-line file to find its eleven-line definition block, then opening the 394-line file to find its transformation logic somewhere else in file order.</li>
                     <li><strong>Merge conflicts between unrelated changes.</strong> Two engineers touching different tables in the same sprint collided on <code>tables_bus.py</code> even though their actual changes never overlapped — resolving it meant verifying that eleven unrelated table definitions hadn't been scrambled together, not just the one either engineer cared about.</li>
                 </ul>
 
                 <div class="flow-diagram">
-                    <div class="flow-diagram__node">Change: add a column to fact_replenishment</div>
+                    <div class="flow-diagram__node">Change: add a column to fact_order_fulfillment</div>
                     <div class="flow-diagram__branch">
                         <div class="flow-diagram__node"><span class="flow-diagram__branch__label">schema</span>tables_bus.py<small>find it among 639 lines</small></div>
                         <div class="flow-diagram__node"><span class="flow-diagram__branch__label">logic</span>02_stage_to_bus.py<small>find it among 394 lines</small></div>
@@ -123,21 +123,21 @@
                 </p>
 
 <pre><code class="language-python"># tables_bus.py — before (abbreviated: 639 lines, 11 tables, one file)
-class DimFacilityDetails(BaseTable):
-    __tablename__ = "dim_facility_details"
-    facility_sk = Column(BigInteger, primary_key=True)
-    facility_id = Column(String)
-    corporate = Column(String)
+class DimWarehouseDetails(BaseTable):
+    __tablename__ = "dim_warehouse_details"
+    warehouse_sk = Column(BigInteger, primary_key=True)
+    warehouse_id = Column(String)
+    region = Column(String)
     # ...42 more columns
 
-class FactReplenishment(BaseTable):
-    __tablename__ = "fact_replenishment"
-    replenishment_sk = Column(BigInteger, primary_key=True)
-    facility_sk = Column(BigInteger, ForeignKey("dim_facility_details.facility_sk"))
+class FactOrderFulfillment(BaseTable):
+    __tablename__ = "fact_order_fulfillment"
+    order_fulfillment_sk = Column(BigInteger, primary_key=True)
+    warehouse_sk = Column(BigInteger, ForeignKey("dim_warehouse_details.warehouse_sk"))
     # ...18 more columns
 
-class FactPutaway(BaseTable):
-    __tablename__ = "fact_putaway"
+class FactInventoryMovement(BaseTable):
+    __tablename__ = "fact_inventory_movement"
     # ...another unrelated table, same file
 </code></pre>
 
@@ -161,38 +161,38 @@ class FactPutaway(BaseTable):
                     The third option is what shipped, and the folder structure makes the reasoning legible on its own:
                 </p>
 
-<pre><code class="language-text">warehouse_efficiency_report/
+<pre><code class="language-text">warehouse_ops_report/
 ├── 02_stage_to_bus.py                  # orchestration only: import + call, in order
 └── bus/
     ├── data/
-    │   ├── dim_facility_details.py     # schema for this one table
-    │   ├── fact_replenishment.py
-    │   └── fact_putaway.py
-    ├── dim_facility_details/
+    │   ├── dim_warehouse_details.py     # schema for this one table
+    │   ├── fact_order_fulfillment.py
+    │   └── fact_inventory_movement.py
+    ├── dim_warehouse_details/
     │   └── transformations.py          # business logic for this one table
-    ├── fact_replenishment/
+    ├── fact_order_fulfillment/
     │   └── transformations.py
-    └── fact_putaway/
+    └── fact_inventory_movement/
         └── transformations.py</code></pre>
 
                 <p>
-                    Touching <code>fact_replenishment</code> now means opening one folder — its schema and its transformation are physically next to each other, not connected by a naming convention across two large files. The orchestration script that used to hold 394 lines of transformation logic shrank to a sequence of function calls, one per entity, in dependency order:
+                    Touching <code>fact_order_fulfillment</code> now means opening one folder — its schema and its transformation are physically next to each other, not connected by a naming convention across two large files. The orchestration script that used to hold 394 lines of transformation logic shrank to a sequence of function calls, one per entity, in dependency order:
                 </p>
 
 <pre><code class="language-python"># 02_stage_to_bus.py — after
-from bus.dim_facility_details.transformations import build_dim_facility_details
-from bus.fact_replenishment.transformations import build_fact_replenishment
-from bus.fact_putaway.transformations import build_fact_putaway
+from bus.dim_warehouse_details.transformations import build_dim_warehouse_details
+from bus.fact_order_fulfillment.transformations import build_fact_order_fulfillment
+from bus.fact_inventory_movement.transformations import build_fact_inventory_movement
 
 def run(spark, cfg):
-    build_dim_facility_details(spark, cfg)   # dimension first
-    build_fact_replenishment(spark, cfg)     # depends on the dimension above
-    build_fact_putaway(spark, cfg)</code></pre>
+    build_dim_warehouse_details(spark, cfg)     # dimension first
+    build_fact_order_fulfillment(spark, cfg)    # depends on the dimension above
+    build_fact_inventory_movement(spark, cfg)</code></pre>
 
                 <div class="flow-diagram">
-                    <div class="flow-diagram__node">Change: add a column to fact_replenishment</div>
+                    <div class="flow-diagram__node">Change: add a column to fact_order_fulfillment</div>
                     <div class="flow-diagram__arrow"></div>
-                    <div class="flow-diagram__node">bus/fact_replenishment/<small>data.py + transformations.py, same folder</small></div>
+                    <div class="flow-diagram__node">bus/fact_order_fulfillment/<small>data.py + transformations.py, same folder</small></div>
                 </div>
 
                 <p>
@@ -206,11 +206,11 @@ def run(spark, cfg):
                 </p>
 
 <pre><code class="language-python"># Before: nearly identical logic, duplicated across nine files
-# stg/facility/transformations.py
-df = df.withColumn("facility_id", trim(upper(col("facility_id"))))
-df = df.filter(col("facility_id").isNotNull())
+# stg/warehouse/transformations.py
+df = df.withColumn("warehouse_id", trim(upper(col("warehouse_id"))))
+df = df.filter(col("warehouse_id").isNotNull())
 
-# stg/task_hdr/transformations.py — same idea, drifted implementation
+# stg/task_header/transformations.py — same idea, drifted implementation
 df = df.withColumn("task_id", upper(trim(col("task_id"))))
 df = df.na.drop(subset=["task_id"])</code></pre>
 
