@@ -59,7 +59,7 @@
                 <h2>The Problem</h2>
 
                 <p>
-                    When the department team asked for analytics on headcount, sick leave, and hours worked across their Store, Warehouse, and Finance divisions, the ask sounded deceptively straightforward. What arrived, though, was anything but clean. Profit center codes came in as raw strings that needed window-function deduplication because the same key could show up twice on the same day with different metadata from late-arriving corrections. Date fields came in at least three different formats depending on the source system. Some records had a valid <code>CORPORATE</code> identifier and others didn't. And the Horizon department feed — which supplies KPIs across three organisational scopes — was structured as a wide pivot table that had to be unpivoted before it could be joined against anything resembling a dimensional model.
+                    When the department team asked for analytics on headcount, sick leave, and hours worked across their Store, Warehouse, and Finance divisions, the ask sounded deceptively straightforward. What arrived, though, was anything but clean. Profit center codes came in as raw strings that needed window-function deduplication because the same key could show up twice on the same day with different metadata from late-arriving corrections. Date fields came in at least three different formats depending on the source system. Some records had a valid <code>CORPORATE</code> identifier and others didn't. And the Compass department feed — which supplies KPIs across three organisational scopes — was structured as a wide pivot table that had to be unpivoted before it could be joined against anything resembling a dimensional model.
                 </p>
 
                 <p>
@@ -67,15 +67,15 @@
                 </p>
 
                 <div class="flow-diagram">
-                    <div class="flow-diagram__node">Source feeds<small>Profit center metadata, store hours worked, sick leave hours, Horizon department pivot export</small></div>
+                    <div class="flow-diagram__node">Source feeds<small>Profit center metadata, store hours worked, sick leave hours, Compass department pivot export</small></div>
                     <div class="flow-diagram__arrow"></div>
                     <div class="flow-diagram__node">Raw layer<small>Mirror source, all dates STRING</small></div>
                     <div class="flow-diagram__arrow"></div>
                     <div class="flow-diagram__node">Stage layer<small>str_to_date / str_to_decimal UDFs, ROW_NUMBER dedup on profit_center_id, ymd</small></div>
                     <div class="flow-diagram__arrow"></div>
-                    <div class="flow-diagram__node">Bus layer<small>dim_kpi_type, dim_profit_center, fact_hr_kpi — Horizon: unpivot per scope, enrich once</small></div>
+                    <div class="flow-diagram__node">Bus layer<small>dim_kpi_type, dim_profit_center, fact_hr_kpi — Compass: unpivot per scope, enrich once</small></div>
                     <div class="flow-diagram__arrow"></div>
-                    <div class="flow-diagram__node">Serve layer<small>fact_month_store_agg, fact_month_region_agg, fact_month_horizon_store/warehouse/finance</small></div>
+                    <div class="flow-diagram__node">Serve layer<small>fact_month_store_agg, fact_month_region_agg, fact_month_compass_store/warehouse/finance</small></div>
                     <div class="flow-diagram__arrow"></div>
                     <div class="flow-diagram__node">BI consumers<small>Store / Warehouse / Finance scopes</small></div>
                 </div>
@@ -97,7 +97,7 @@
                 </p>
 
                 <p>
-                    <strong>Flat ingestion straight into reporting tables.</strong> Land the raw feeds and transform them directly into the shapes BI needed, skipping intermediate layers entirely. This is the fastest path to a first dashboard, and for a single, stable source it can be a reasonable trade. But the department feeds were neither single-source nor stable — four countries, a pivoted Horizon export, and inconsistent date formats meant every upstream schema change would cascade directly into whatever query was serving the dashboard. Debugging a broken report would mean untangling raw parsing, business logic, and aggregation all in the same statement.
+                    <strong>Flat ingestion straight into reporting tables.</strong> Land the raw feeds and transform them directly into the shapes BI needed, skipping intermediate layers entirely. This is the fastest path to a first dashboard, and for a single, stable source it can be a reasonable trade. But the department feeds were neither single-source nor stable — four countries, a pivoted Compass export, and inconsistent date formats meant every upstream schema change would cascade directly into whatever query was serving the dashboard. Debugging a broken report would mean untangling raw parsing, business logic, and aggregation all in the same statement.
                 </p>
 
                 <p>
@@ -121,7 +121,7 @@
                 <h3>Raw Layer: Mirror, Don't Interpret</h3>
 
                 <p>
-                    The raw layer holds exactly what arrived from the source systems — no column renames, no type coercion, no filtering. For the department domain this meant landing four source feeds: profit center metadata, store hours worked, sick leave hours, and the Horizon department pivot export. We deliberately kept the raw schema as close to the source as possible so that upstream changes were visible immediately, not masked behind a transformation.
+                    The raw layer holds exactly what arrived from the source systems — no column renames, no type coercion, no filtering. For the department domain this meant landing four source feeds: profit center metadata, store hours worked, sick leave hours, and the Compass department pivot export. We deliberately kept the raw schema as close to the source as possible so that upstream changes were visible immediately, not masked behind a transformation.
                 </p>
 
                 <p>
@@ -131,7 +131,7 @@
                 <h3>Stage Layer: Type, Validate, Normalise</h3>
 
                 <p>
-                    The stage layer is where raw strings become typed values and where the domain starts to enforce its own semantics. For this domain, that meant four dedicated staging tables: <code>sa_profit_center</code>, <code>sa_store_hours_worked</code>, <code>sa_store_sick_leave_hours</code>, <code>sa_store_soc</code>, and — added later when the Horizon feed was onboarded — <code>sa_horizon_store</code>, <code>sa_horizon_warehouse</code>, <code>sa_horizon_finance</code>, and <code>sa_cost_center</code>.
+                    The stage layer is where raw strings become typed values and where the domain starts to enforce its own semantics. For this domain, that meant four dedicated staging tables: <code>sa_profit_center</code>, <code>sa_store_hours_worked</code>, <code>sa_store_sick_leave_hours</code>, <code>sa_store_soc</code>, and — added later when the Compass feed was onboarded — <code>sa_compass_store</code>, <code>sa_compass_warehouse</code>, <code>sa_compass_finance</code>, and <code>sa_cost_center</code>.
                 </p>
 
                 <p>
@@ -178,30 +178,30 @@ WHERE str_to_date(raw_date_col) BETWEEN :start_dt AND :end_dt</code></pre>
                 </p>
 
                 <ul>
-                    <li><strong>dim_kpi_type</strong> — a static reference dimension seeded from a constants file, mapping each KPI type to a surrogate key and, after the Horizon extension, to a <code>reporting_scope_nm</code> that distinguished Store, Warehouse, and Finance scopes.</li>
+                    <li><strong>dim_kpi_type</strong> — a static reference dimension seeded from a constants file, mapping each KPI type to a surrogate key and, after the Compass extension, to a <code>reporting_scope_nm</code> that distinguished Store, Warehouse, and Finance scopes.</li>
                     <li><strong>dim_profit_center</strong> — a slowly-changing dimension enriched from an external SAP source. Seventeen columns wide, with surrogate keys generated by hashing a composite of <code>profit_center_id</code>, <code>corporate</code>, and <code>ymd</code>.</li>
                     <li><strong>fact_hr_kpi</strong> — the central fact table, 45 columns, partitioned by <code>(ymd, corporate, kpi_type_sk)</code>.</li>
                 </ul>
 
                 <p>
-                    The partition on <code>kpi_type_sk</code> deserves explanation. We had four initial KPI types (Store Hours Worked, Sick Leave Hours, Span of Control, Paid Overtime Hours) and knew the Horizon extension would add more. By including <code>kpi_type_sk</code> in the partition key, each pipeline run could reload a single KPI type's data for a given day without touching other partitions — making selective reruns cheap and safe.
+                    The partition on <code>kpi_type_sk</code> deserves explanation. We had four initial KPI types (Store Hours Worked, Sick Leave Hours, Span of Control, Paid Overtime Hours) and knew the Compass extension would add more. By including <code>kpi_type_sk</code> in the partition key, each pipeline run could reload a single KPI type's data for a given day without touching other partitions — making selective reruns cheap and safe.
                 </p>
 
                 <p>
-                    When the Horizon department feed arrived, it introduced a structural challenge: the source data was a wide pivot table where each KPI was a separate column. We needed to unpivot three separate Horizon sources (Store, Warehouse, Finance), union the results, and then join against the dimension tables — but we wanted the expensive dimension enrichment to happen only once, not three times. The solution was to separate the unpivot logic from the enrichment join:
+                    When the Compass department feed arrived, it introduced a structural challenge: the source data was a wide pivot table where each KPI was a separate column. We needed to unpivot three separate Compass sources (Store, Warehouse, Finance), union the results, and then join against the dimension tables — but we wanted the expensive dimension enrichment to happen only once, not three times. The solution was to separate the unpivot logic from the enrichment join:
                 </p>
 
-<pre><code class="language-python">def get_query_unpivot_horizon_store(cfg: HRConfig) -> str:
-    """Unpivot Horizon Store wide table into long KPI format."""
+<pre><code class="language-python">def get_query_unpivot_compass_store(cfg: HRConfig) -> str:
+    """Unpivot Compass Store wide table into long KPI format."""
     return f"""
     SELECT
         cost_center_id,
         ymd,
         corporate,
-        '{KPI_HORIZON_HEADCOUNT_STORE}'   AS kpi_type_nm,
+        '{KPI_COMPASS_HEADCOUNT_STORE}'   AS kpi_type_nm,
         '{SCOPE_STORE}'                  AS reporting_scope_nm,
         headcount_val                    AS kpi_value
-    FROM {cfg.stage_schema}.sa_horizon_store
+    FROM {cfg.stage_schema}.sa_compass_store
     UNPIVOT (headcount_val FOR kpi_col IN (
         headcount_fte,
         headcount_part_time,
@@ -209,9 +209,9 @@ WHERE str_to_date(raw_date_col) BETWEEN :start_dt AND :end_dt</code></pre>
     ))
     """
 
-def get_query_enrich_horizon_kpis(unpivoted_df, dim_cost_center_df, dim_kpi_type_df):
+def get_query_enrich_compass_kpis(unpivoted_df, dim_cost_center_df, dim_kpi_type_df):
     """
-    Apply dimension enrichment once after union of all three Horizon sources.
+    Apply dimension enrichment once after union of all three Compass sources.
     Avoids triple join cost when processing Store + Warehouse + Finance together.
     """
     return (
@@ -225,17 +225,17 @@ def get_query_enrich_horizon_kpis(unpivoted_df, dim_cost_center_df, dim_kpi_type
     )
 
 # In the orchestration notebook:
-store_df      = spark.sql(get_query_unpivot_horizon_store(cfg))
-warehouse_df  = spark.sql(get_query_unpivot_horizon_warehouse(cfg))
-finance_df    = spark.sql(get_query_unpivot_horizon_finance(cfg))
+store_df      = spark.sql(get_query_unpivot_compass_store(cfg))
+warehouse_df  = spark.sql(get_query_unpivot_compass_warehouse(cfg))
+finance_df    = spark.sql(get_query_unpivot_compass_finance(cfg))
 
-horizon_long_df = store_df.union(warehouse_df).union(finance_df)
-enriched_df   = get_query_enrich_horizon_kpis(
-    horizon_long_df, dim_cost_center_df, dim_kpi_type_df
+compass_long_df = store_df.union(warehouse_df).union(finance_df)
+enriched_df   = get_query_enrich_compass_kpis(
+    compass_long_df, dim_cost_center_df, dim_kpi_type_df
 )</code></pre>
 
                 <p>
-                    This pattern — unpivot separately, enrich once — cut the bus-layer runtime for the Horizon segment by roughly 60% compared to our first prototype, which naively joined dimensions inside each of the three unpivot queries.
+                    This pattern — unpivot separately, enrich once — cut the bus-layer runtime for the Compass segment by roughly 60% compared to our first prototype, which naively joined dimensions inside each of the three unpivot queries.
                 </p>
 
                 <h3>Serve Layer: Thin and Purpose-Built</h3>
@@ -245,7 +245,7 @@ enriched_df   = get_query_enrich_horizon_kpis(
                 </p>
 
                 <p>
-                    The Horizon extension added three more: <code>fact_month_horizon_store</code>, <code>fact_month_horizon_warehouse</code>, and <code>fact_month_horizon_finance</code>, one per reporting scope. Keeping scopes as separate tables rather than a single table with a scope discriminator was a deliberate choice — it let BI developers apply role-level security at the table boundary rather than relying on row filters, which are easier to misconfigure.
+                    The Compass extension added three more: <code>fact_month_compass_store</code>, <code>fact_month_compass_warehouse</code>, and <code>fact_month_compass_finance</code>, one per reporting scope. Keeping scopes as separate tables rather than a single table with a scope discriminator was a deliberate choice — it let BI developers apply role-level security at the table boundary rather than relying on row filters, which are easier to misconfigure.
                 </p>
 
                 <h2>Cross-Country KPI Challenges</h2>
@@ -273,12 +273,12 @@ enriched_df   = get_query_enrich_horizon_kpis(
 <pre><code class="language-sql">-- Bus layer: outbound KPI transformation
 -- FLAG_IS_DC is populated at stage, but the filter lives here
 SELECT
-    f.facility_id,
-    f.tc_company_id,
-    f.cluster_id,
+    f.warehouse_id,
+    f.company_id,
+    f.dc_cluster_id,
     f.corporate,
     k.kpi_value
-FROM stage_hr.sa_horizon_warehouse f
+FROM stage_hr.sa_compass_warehouse f
 JOIN bus_hr.dim_cost_center d
     ON f.cost_center_id = d.cost_center_id
    AND f.corporate      = d.corporate
@@ -293,7 +293,7 @@ JOIN bus_hr.dim_kpi_type k
                 <h3>Surrogate Keys Across Corporate Boundaries</h3>
 
                 <p>
-                    Profit centers are reused across different corporate entities — the same numeric code means different things in different countries. Our first version of <code>dim_profit_center</code> generated surrogate keys by hashing only the profit center identifier, which produced collisions the moment we loaded a second country. The fix was to include <code>corporate</code> in the hash input: <code>SHA2(CONCAT(profit_center_id, '|', corporate, '|', ymd), 256)</code>. We also extended the merge key in <code>dim_profit_center</code> to include <code>TC_COMPANY_ID</code> alongside the existing <code>FACILITY_ID</code>, <code>CLUSTER_ID</code>, and <code>CORPORATE</code> columns — adding that fourth column to the merge condition eliminated duplicate facility records that had been silently accumulating since the second country was loaded.
+                    Profit centers are reused across different corporate entities — the same numeric code means different things in different countries. Our first version of <code>dim_profit_center</code> generated surrogate keys by hashing only the profit center identifier, which produced collisions the moment we loaded a second country. The fix was to include <code>corporate</code> in the hash input: <code>SHA2(CONCAT(profit_center_id, '|', corporate, '|', ymd), 256)</code>. We also extended the merge key in <code>dim_profit_center</code> to include <code>COMPANY_ID</code> alongside the existing <code>WAREHOUSE_ID</code>, <code>DC_CLUSTER_ID</code>, and <code>CORPORATE</code> columns — adding that fourth column to the merge condition eliminated duplicate facility records that had been silently accumulating since the second country was loaded.
                 </p>
 
                 <h2>Dimensional Modelling Choices</h2>
@@ -325,9 +325,9 @@ KPI_SICK_LEAVE_HOURS      = "Sick Leave Hours"
 KPI_SPAN_OF_CONTROL       = "Span of Control"
 KPI_PAID_OVERTIME_HOURS   = "Paid Overtime Hours"
 
-KPI_HORIZON_HEADCOUNT_STORE     = "Horizon Headcount Store"
-KPI_HORIZON_HEADCOUNT_WAREHOUSE = "Horizon Headcount Warehouse"
-KPI_HORIZON_HEADCOUNT_FINANCE   = "Horizon Headcount Finance"
+KPI_COMPASS_HEADCOUNT_STORE     = "Compass Headcount Store"
+KPI_COMPASS_HEADCOUNT_WAREHOUSE = "Compass Headcount Warehouse"
+KPI_COMPASS_HEADCOUNT_FINANCE   = "Compass Headcount Finance"
 
 # Reporting scope names — used in dim_kpi_type.reporting_scope_nm
 SCOPE_STORE     = "Store"
@@ -337,7 +337,7 @@ SCOPE_FINANCE   = "Finance"</code></pre>
                 <h3>Schema Evolution Is Cheaper Upfront</h3>
 
                 <p>
-                    Every column we omitted from early table designs because it "wasn't needed yet" came back as a migration cost later. <code>CORPORATE</code> was the most painful example, but <code>reporting_scope_nm</code> on <code>dim_kpi_type</code> was another — the column didn't exist when the dimension was first created, so adding it required an Alembic migration, a transformation update, and a full reload of the dimension. Had we anticipated the three-scope Horizon structure from the start, that would have been a one-time design decision, not a retrofit across four files.
+                    Every column we omitted from early table designs because it "wasn't needed yet" came back as a migration cost later. <code>CORPORATE</code> was the most painful example, but <code>reporting_scope_nm</code> on <code>dim_kpi_type</code> was another — the column didn't exist when the dimension was first created, so adding it required an Alembic migration, a transformation update, and a full reload of the dimension. Had we anticipated the three-scope Compass structure from the start, that would have been a one-time design decision, not a retrofit across four files.
                 </p>
 
                 <h3>Test Dimensional Seeds, Not Just Transformations</h3>
@@ -355,7 +355,7 @@ SCOPE_FINANCE   = "Finance"</code></pre>
                 <h2>The Outcome</h2>
 
                 <p>
-                    The domain that shipped covers 30+ KPIs across four international markets and three reporting scopes — Store, Warehouse, and Finance — all running inside a single Databricks-based medallion pipeline. The layer boundaries did what they were built to do: when the Horizon feed arrived mid-project with a wide-pivot structure nobody had designed for on day one, it slotted in as new stage tables and a bus-layer unpivot-then-enrich step, without touching the existing Store or Warehouse transformations. The unpivot-once, enrich-once restructuring alone cut bus-layer runtime for the Horizon segment by roughly 60% compared to the first prototype, which had joined dimensions inside each of the three unpivot queries separately.
+                    The domain that shipped covers 30+ KPIs across four international markets and three reporting scopes — Store, Warehouse, and Finance — all running inside a single Databricks-based medallion pipeline. The layer boundaries did what they were built to do: when the Compass feed arrived mid-project with a wide-pivot structure nobody had designed for on day one, it slotted in as new stage tables and a bus-layer unpivot-then-enrich step, without touching the existing Store or Warehouse transformations. The unpivot-once, enrich-once restructuring alone cut bus-layer runtime for the Compass segment by roughly 60% compared to the first prototype, which had joined dimensions inside each of the three unpivot queries separately.
                 </p>
 
                 <p>
