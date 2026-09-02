@@ -1,0 +1,296 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>One Workspace, Three Environments: Isolating Databricks Deployments Without Physical Separation — Oselio Candido</title>
+    <meta name="description" content="How a Databricks Asset Bundle isolates dev, integration, and production inside one shared workspace — per-tier Terraform state, environment-variable plumbing, per-target pause status, and permission groups templated by deploy target.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="stylesheet" href="../../css/components.css">
+    <link rel="stylesheet" href="../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../../index.html#about">About</a></li>
+                <li><a href="../../blog/">Articles</a></li>
+                <li><a href="../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">CI/CD</span>
+                <h1 class="article-page__title">One Workspace, Three Environments: Isolating Databricks Deployments Without Physical Separation</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Nov 3, 2025</span>
+                    <span>·</span>
+                    <span>12 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <h2>Background: What a "Satellite" Is</h2>
+
+                <p>
+                    One term here isn't standard Databricks or Azure vocabulary, and it needs unpacking before anything else makes sense: "satellite." It's the customer's own internal name for a numbered bundle of Azure resources provisioned per business use case. When a team requests infrastructure from the internal platform/infra team for a new project, what comes back isn't a single resource — it's a satellite: a Databricks workspace, storage accounts, networking, and whatever else that project needs, provisioned together as one unit and identified by a sequential number, one per business case that's gone through that intake process (142, 143, 144, and so on). This article uses <code>042</code> as a stand-in for that number throughout.
+                </p>
+
+                <p>
+                    That number is what <code>${var.satellite_number}</code> resolves to further down — the CI variable exported as <code>BUNDLE_VAR_satellite_number</code> is the same satellite id, threaded through the bundle so permission-group names and naming conventions can be templated per business case instead of hardcoded per project.
+                </p>
+
+                <h2>The Problem</h2>
+
+                <p>
+                    Infrastructure provisioning put dev, integration, and production on the same Databricks workspace — there was no per-environment workspace to lean on for isolation. That constraint pushes a problem down into the deployment tooling that would otherwise be solved by infrastructure: if three environments share one workspace, a bundle deploy needs its own way to keep them from colliding — separate Terraform state per environment inside that single workspace, separate schedule behavior, separate permissions — all resolved from configuration rather than from three physically distinct workspaces.
+                </p>
+
+                <p>
+                    A job parameter named <code>environment</code> still defaulted to a hardcoded <code>development-prd</code> string, which meant that as soon as integration and production deploys started landing in the same workspace, jobs in those tiers kept resolving to the development state path and schema instead of their own. Cluster IDs were assigned as fixed literals per job, and the workspace root path used for deploys pointed at a single hardcoded location — three tiers writing state into the same place in the same workspace. Nothing about that setup was visibly broken in a quick smoke test; it only surfaced once a deploy to a non-development tier quietly wrote into development's state and schema.
+                </p>
+
+                <div class="flow-diagram">
+                    <div class="flow-diagram__node">Branch pattern on push</div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">Deployment-tier variable block<small>dev-tst / int-prd / production ...</small></div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">Exported environment variables<small>satellite id, deployment tier, environment stage, schedule status, permission level, cluster name</small></div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">Bundle variables<small>resolved from exported env vars</small></div>
+                    <div class="flow-diagram__branch">
+                        <div class="flow-diagram__node">Terraform state path<small>per tier + deploy target</small></div>
+                        <div class="flow-diagram__node">Job schedule pause_status<small>PAUSED except production</small></div>
+                        <div class="flow-diagram__node">Job cluster_id lookup<small>by cluster name</small></div>
+                        <div class="flow-diagram__node">Permission group names<small>satellite id + deploy target</small></div>
+                        <div class="flow-diagram__node">Job environment param<small>deployment tier-environment stage</small></div>
+                    </div>
+                </div>
+
+                <h2>What Is a Databricks Asset Bundle</h2>
+
+                <p>
+                    A Databricks Asset Bundle is a declarative way of describing jobs, clusters, permissions, and other workspace resources as YAML, deployed with a CLI command rather than clicked together in the workspace UI. The appeal over a set of environment-specific scripts or copy-pasted job configs is that the same bundle definition can be deployed to multiple targets — the resource definitions stay the same, and only a set of variables changes per target. Those variables can be populated at deploy time from the process environment, but only if the environment variable name follows a specific convention: a bundle variable named <code>foo</code> is populated from an environment variable named <code>BUNDLE_VAR_foo</code>. The prefix exists to prevent collisions — a CI runner's environment already carries dozens of variables unrelated to the bundle (branch metadata, cloud credentials, project-specific settings), and without a dedicated namespace the Databricks CLI would have no reliable way to know which of those were meant to resolve bundle variables versus which were unrelated CI plumbing.
+                </p>
+
+                <p>
+                    The CI pipeline exports that bridge explicitly, one line per bundle variable, right before the bundle deploy command runs:
+                </p>
+
+<pre><code class="language-bash">export DATABRICKS_HOST=$DatabricksWorkspaceID
+export DATABRICKS_AUTH_TYPE=azure-client-secret
+export ARM_TENANT_ID=$ARM_TENANT_ID
+export BUNDLE_VAR_deploy_path=$DBX_RELEASE_PATH
+export BUNDLE_VAR_host=$DatabricksWorkspaceID
+export BUNDLE_VAR_run_as_sp_ci_cd=$ARM_CLIENT_ID
+export BUNDLE_VAR_run_as_sp=$DBX_WORKFLOW_ARM_CLIENT_ID
+export BUNDLE_VAR_satellite_number=$EnvironmentSequence
+export BUNDLE_VAR_env_type=${EnvironmentType^^}
+export BUNDLE_VAR_cluster_name=$DBX_CLUSTER_NAME
+export BUNDLE_VAR_gitlab_deployment_tier=$GITLAB_DEPLOYMENT_TIER
+export BUNDLE_VAR_environment_stage=$ENVIRONMENT_STAGE
+export BUNDLE_VAR_jobs_schedule_status=$JOBS_SCHEDULE_STATUS
+export BUNDLE_VAR_edit_mode_jobs=UI_LOCKED
+export BUNDLE_VAR_jobs_permission_level=$JOBS_PERMISSION_LEVEL</code></pre>
+
+                <p>
+                    On the bundle side, the top-level bundle config declares matching variable stubs with empty defaults, each documented with where its value is supposed to come from at runtime:
+                </p>
+
+<pre><code class="language-yaml">variables:
+  satellite_number:
+    description: The number of the satellite_number to set permission
+  gitlab_deployment_tier:
+    description: The deployment tier from CI/CD (development, integration, staging, production)
+  environment_stage:
+    description: Environment stage (tst or prd)
+  jobs_schedule_status:
+    description: Schedule status for jobs (PAUSED or UNPAUSED)
+  jobs_permission_level:
+    description: Permission level for job access (CAN_MANAGE or CAN_MANAGE_RUN)
+  edit_mode_jobs:
+    description: Job edit mode (UI_LOCKED for CI/CD deployments)</code></pre>
+
+                <p>
+                    Neither side of that pairing does anything clever — it's a naming convention enforced by discipline, not by a schema check. That's exactly why the original bug happened: a job parameter reached for a hardcoded string instead of the variable that was already flowing through this pipe, and nothing caught it until someone deployed to a tier where the hardcoded value was visibly wrong.
+                </p>
+
+                <h2>The Alternatives</h2>
+
+                <p>
+                    Given that a per-environment workspace wasn't on the table, there were still a few different ways to get isolation inside the single shared one. The first was to keep patching symptoms as they surfaced — fix the hardcoded <code>environment</code> default, ship it, and wait for the next place a similar assumption was baked in. That's effectively what had been happening: individual defaults got hardcoded as the bundle grew, each one reasonable in isolation, each one wrong the moment a second or third environment started deploying through the same code path. It's the cheapest option per fix and the most expensive option in aggregate, because every hardcoded value is a latent bug waiting for a tier that hasn't exercised that code path yet.
+                </p>
+
+                <p>
+                    A second option was to fork the job and resource definitions per environment — a development copy, an integration copy, a production copy — each with its own literal values baked in. That guarantees no accidental cross-tier collision, because there's no shared code path to collide through, but it trades that for permanent drift risk: any change to a job's logic, cluster reference, or schedule shape has to be applied identically in three (or eight) places, and nothing enforces that it was. Given how many deployment tiers this environment actually needed — eight, not three — a forked-copy approach would have meant maintaining eight near-identical YAML trees by hand.
+                </p>
+
+                <p>
+                    The third option was the one taken: keep one bundle definition, and make every environment-sensitive value — Terraform state path, cluster assignment, schedule status, permission scope, the job's own environment parameter — resolve from a small set of variables populated per tier from CI, instead of being hardcoded or duplicated. That concentrates the environment-specific knowledge in one configuration surface instead of scattering it across either hardcoded defaults or forked YAML.
+                </p>
+
+                <h2>The Decision</h2>
+
+                <h3>Where Each Value Actually Comes From</h3>
+
+                <p>
+                    The values that land in those exported bundle variables aren't arbitrary — each one is set once, per deployment tier, in a CI variable block keyed to the branch pattern that triggered the pipeline:
+                </p>
+
+<pre><code class="language-yaml">.virt-env-vars:dev-tst:
+  variables:
+    GITLAB_DEPLOYMENT_TIER: development
+    ENVIRONMENT_STAGE: tst
+    JOBS_SCHEDULE_STATUS: PAUSED
+    DBX_CLUSTER_NAME: cluster-a
+    JOBS_PERMISSION_LEVEL: CAN_MANAGE
+
+.virt-env-vars:int-prd:
+  variables:
+    GITLAB_DEPLOYMENT_TIER: integration
+    ENVIRONMENT_STAGE: prd
+    JOBS_SCHEDULE_STATUS: PAUSED
+    DBX_CLUSTER_NAME: cluster-a
+    JOBS_PERMISSION_LEVEL: CAN_MANAGE_RUN
+
+.virt-env-vars:production:
+  variables:
+    GITLAB_DEPLOYMENT_TIER: production
+    ENVIRONMENT_STAGE: prd
+    JOBS_SCHEDULE_STATUS: UNPAUSED
+    DBX_CLUSTER_NAME: cluster-b
+    JOBS_PERMISSION_LEVEL: CAN_MANAGE_RUN</code></pre>
+
+                <p>
+                    Eight of these blocks exist — one per tier (dev-tst, dev-prd, int-tst, int-prd, staging, production, rls-tst, rls-prd) — and the CI system's branch rules select which block applies to a given pipeline run. Everything downstream, from the workspace path a bundle deploys to, to which cluster a job runs on, to whether that job's schedule is armed, is a pure function of these lines. Change the environment behavior for a tier and there's exactly one place to look.
+                </p>
+
+                <h3>Schedule State as a Deliberate Safety Boundary</h3>
+
+                <p>
+                    Every scheduled job in the bundle sets its <code>pause_status</code> from the same variable, and the target-level presets set the same thing at the trigger level:
+                </p>
+
+<pre><code class="language-yaml">schedule:
+  quartz_cron_expression: 11 0 7 * * ?
+  timezone_id: Europe/Amsterdam
+  pause_status: ${var.jobs_schedule_status}
+
+targets:
+  TST:
+    mode: production
+    default: true
+    presets:
+      name_prefix: "[${var.gitlab_deployment_tier}] "
+      trigger_pause_status: ${var.jobs_schedule_status}
+  PRD:
+    mode: production
+    presets:
+      name_prefix: "[${var.gitlab_deployment_tier}] "
+      trigger_pause_status: ${var.jobs_schedule_status}</code></pre>
+
+                <p>
+                    The configuration matrix resolves this to <code>PAUSED</code> for every tier except one: <code>production</code>, which is <code>UNPAUSED</code>. This matters more than usual because dev, integration, and production deploy into the same workspace — there's no physical boundary stopping a dev or integration job from running against real data on its own schedule, so the boundary has to be enforced in configuration instead. A deployment to dev-tst or int-prd still creates the job, still wires the schedule expression, still assigns the cluster — but the cron trigger stays dormant. Engineers can run it manually from the Jobs UI as many times as the dev loop needs, and integration testing can exercise the same job definition that will eventually run in production, without either of them silently executing unattended in a workspace they share with production. Only when a deployment reaches the <code>production</code> tier does the same job definition start firing on its own.
+                </p>
+
+                <blockquote>
+                    A job definition that's identical in every environment except one boolean-shaped setting — its own schedule — is a different kind of trust than a job definition that changes shape as it's promoted. You're not hoping the production version behaves like the one you tested; it's the exact same YAML, and the only thing that changed is whether the clock is allowed to run.
+                </blockquote>
+
+                <h3>Branch to Environment: One Codebase, Layered Config</h3>
+
+                <p>
+                    The branch pattern that triggers a pipeline determines which variable block — and therefore which deployment tier — applies: a feature branch resolves to the development tier, the integration branch resolves to integration, and the release branch resolves to staging/production. None of that branching logic lives inside the bundle or the job definitions themselves — the job YAML is identical regardless of which branch triggered the deploy, the same cluster reference, the same schedule block, the same permission block. What differs per branch is entirely external: which CI variable block gets selected, and therefore which values get exported before the bundle deploy runs.
+                </p>
+
+                <p>
+                    That separation is the actual value proposition of a bundle over environment-specific scripts or copy-pasted job configs: there's one file to read to understand what a job does, and one file to read to understand how its behavior varies by environment. Before this fix, those two concerns were tangled — a hardcoded <code>development-prd</code> default meant the job definition itself silently encoded an environment assumption, which is exactly the coupling the bundle model is supposed to eliminate.
+                </p>
+
+                <h3>Permissions That Interpolate Instead of Duplicate</h3>
+
+                <p>
+                    Job-level permissions follow the same templating principle, using two different bundle-context values in the same group name:
+                </p>
+
+<pre><code class="language-yaml">permissions:
+  - group_name: "<group-prefix>_${var.satellite_number}_${bundle.target}_DEVELOPER"
+    level: ${var.jobs_permission_level}
+  - group_name: "sat${var.satellite_number}prd_<service-principal-suffix>"
+    level: ${var.jobs_permission_level}</code></pre>
+
+                <p>
+                    <code>${bundle.target}</code> is a built-in bundle reference — it resolves to whichever target (<code>TST</code> or <code>PRD</code>) the current deploy is running against, without needing a CI variable to carry it. <code>${var.satellite_number}</code> comes from the exported satellite-number variable, itself sourced from the environment sequence value in the CI job — a numeric identifier for which platform instance is deploying. Together they interpolate into the exact permission group name Databricks expects, so the same permission block resolves to a fully qualified, environment-specific group name in one target and a different one in another — for example <code>&lt;group-prefix&gt;_042_TST_DEVELOPER</code> versus <code>&lt;group-prefix&gt;_042_PRD_DEVELOPER</code> — with no duplicated YAML and no risk of the two environments' permission blocks drifting apart because someone edited one and forgot the other.
+                </p>
+
+                <p>
+                    The permission-level variable lets the access level itself vary by tier independently of the group name — the configuration matrix sets it to <code>CAN_MANAGE</code> for lower tiers like dev-tst and rls-tst, and tightens it to <code>CAN_MANAGE_RUN</code> for tiers closer to production such as int-prd, staging, and production. That split isn't an artifact of everything sharing one workspace — it's the same access model you'd want even with fully separate workspaces per environment: broader control (editing, not just running) where engineers are actively iterating, narrower control where a job's definition should only change through a promoted deployment. Templating it through a variable just means the model is expressed once and applies correctly regardless of how the underlying infrastructure is provisioned.
+                </p>
+
+                <h3>Isolating Deploys Inside One Shared Workspace</h3>
+
+                <p>
+                    With no per-environment workspace, the Terraform state backing each bundle deploy became the actual isolation boundary. Every previously-hardcoded value became a variable lookup instead: the workspace deploy path became a variable with a distinct state path derived from the deployment tier and the deploy target, so each tier's Terraform state lives at its own path inside the shared workspace instead of overwriting a neighbor's. Cluster assignment became a lookup block that resolves a cluster's Databricks-assigned ID from its name at deploy time:
+                </p>
+
+<pre><code class="language-yaml">variables:
+  cluster_id:
+    description: Dynamic cluster id to be used depending of the environment
+    lookup:
+      cluster: "${var.cluster_name}"
+  cluster_name:
+    description: Name of the cluster to be used (cluster-a, cluster-b, cluster-c)</code></pre>
+
+                <p>
+                    And the job's environment parameter became a composition of the deployment tier and the environment stage — the exact same expression the workspace state path uses, so a notebook reading its own <code>environment</code> parameter and a bundle deploy resolving its own state path are guaranteed to agree, because they're built from the same two variables instead of two independently-maintained strings. That last point is the caveat worth keeping in mind with this whole approach: it only works because the state path and the job parameter are derived from the same variables rather than two separately-typed strings that happen to look alike today. The original bug was exactly that kind of drift — a hardcoded default that used to match the real environment string and quietly stopped matching once a second tier started deploying. Deriving both from the same source doesn't just fix the symptom, it removes the class of bug.
+                </p>
+
+                <h2>The Outcome</h2>
+
+                <p>
+                    All eight deployment tiers — dev-tst, dev-prd, int-tst, int-prd, staging, production, rls-tst, rls-prd — now carry a complete set of environment variables and a distinct Terraform state path, where several tiers had previously been missing configuration entirely. Jobs route to the correct environment-specific schema based on which branch triggered the deploy, and each tier's state stays isolated inside the shared workspace instead of tiers overwriting each other's deployment state. Feature branches deploy to the development tier, the integration branch deploys to the integration tier, and main/release branches deploy to staging and production — each using the identical job and cluster definitions, differentiated only by the CI variable block selected for that branch.
+                </p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

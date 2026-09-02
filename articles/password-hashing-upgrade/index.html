@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hashes That Upgrade Themselves: verify_and_update on Login — Oselio Candido</title>
+    <meta name="description" content="Why passwords are hashed rather than encrypted, and how CryptContext with deprecated=auto migrates an entire user base to a stronger algorithm one login at a time.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="stylesheet" href="../../css/components.css">
+    <link rel="stylesheet" href="../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../../index.html#about">About</a></li>
+                <li><a href="../../blog/">Articles</a></li>
+                <li><a href="../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Article -->
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">Backend Engineering</span>
+                <h1 class="article-page__title">Hashes That Upgrade Themselves: verify_and_update on Login</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Jul 2026</span>
+                    <span>·</span>
+                    <span>5 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <h2>The problem</h2>
+                <p>You can't decrypt a password hash to re-hash it with a stronger algorithm — that's the entire point of a hash. So when the industry moves on from your algorithm, or you simply want to raise a cost factor as hardware gets faster, your database is stuck with yesterday's hashes and no way to convert them offline. There's exactly one moment where that changes: the instant a user logs in and hands you the plaintext, briefly, to check it. Building a migration strategy around that one moment — rather than around a disruptive one-off event — was the actual design problem.</p>
+
+                <h2>What is password hashing</h2>
+                <p>Encryption is reversible by design — whoever holds the key can read the data. That's exactly wrong for passwords: no one, including the service itself, should ever be able to recover them. So passwords are <strong>hashed</strong>: a one-way function turns the password into a fixed string, and login means hashing the attempt and comparing.</p>
+                <p>But not any hash. General-purpose hashes like SHA-256 are built to be <em>fast</em> — and fast is fatal here, because an attacker with a stolen database can test billions of guesses per second. Password hashing algorithms are built to be deliberately slow and, in newer designs, memory-hungry:</p>
+                <ul>
+                    <li><strong>bcrypt</strong> (1999) — an adjustable cost factor; each +1 doubles the work. Still respectable.</li>
+                    <li><strong>argon2</strong> (2015, Password Hashing Competition winner) — costs CPU <em>and</em> memory, which cripples GPU cracking rigs.</li>
+                </ul>
+                <p>Both bake a random <strong>salt</strong> into every hash, so two users with the same password get different hashes and precomputed rainbow tables are worthless. Everything — algorithm name, cost, salt, digest — is encoded in the stored string itself: <code>$2b$12$N9qo8uLO...</code>. That self-description is what makes multi-scheme verification, and the migration approach below, possible.</p>
+
+                <h2>The alternatives</h2>
+                <p>Say you launched on bcrypt and want new hashes on argon2 — or just want to raise bcrypt's cost factor. The options on the table were not great:</p>
+                <ul>
+                    <li><strong>Re-hash everything offline.</strong> Impossible — you don't have the passwords, only hashes. This isn't a trade-off, it's a hard constraint that rules the option out entirely.</li>
+                    <li><strong>Force a global password reset.</strong> Technically clean and fully in the service's control, but experientially awful — every user punished with a forced reset for the service's own crypto hygiene, on a schedule that has nothing to do with them.</li>
+                    <li><strong>Run both algorithms forever, unmanaged.</strong> Cheapest to ship, but entropy wins: five years later nobody knows which users are on which scheme, and the "temporary" dual-algorithm state never actually resolves.</li>
+                    <li><strong>Lazy re-hash on login.</strong> Verify each login against whatever the stored hash says it is, and if that scheme is outdated, re-hash the plaintext you're briefly holding anyway and save it. No forced event, no offline impossibility, and the migration has a real endpoint — the day the old hashes run out.</li>
+                </ul>
+
+                <h2>The decision</h2>
+                <p>The lazy re-hash won, and the reason it works cleanly comes down to how a password-hashing library like passlib's <code>CryptContext</code> is configured. Its whole policy fits in one declaration: a list of accepted schemes, with the first entry marking the current standard for new hashes and every other entry still accepted but flagged as deprecated.</p>
+                <pre><code class="language-python">pwd_context = CryptContext(
+    schemes=["bcrypt", "argon2"],
+    deprecated="auto",
+)
+
+def verify_and_update_password(plain_password, hashed_password):
+    valid, new_hash = pwd_context.verify_and_update(
+        plain_password, hashed_password
+    )
+    return valid, new_hash   # new_hash is None if no upgrade needed</code></pre>
+                <p>The library reads the algorithm from the stored hash string itself, verifies with the right one, and — if the hash is deprecated, or just below the current cost parameters — returns a fresh hash under the current scheme in the same call. The return shape is the elegant part: <code>(True, None)</code> means "valid, already current — do nothing." <code>(True, "$2b$...")</code> means "valid, and here's its upgrade." Two values, whole policy communicated.</p>
+                <p>The upgrade is wired into the one place the plaintext briefly exists: the login check itself. On a successful login, if a new hash comes back, the stored hash gets overwritten in the same transaction as the login; on a failed login, nothing changes. No new code path holds the plaintext for longer than it always did — the migration adds zero exposure.</p>
+                <blockquote>The only moment you're ever allowed to re-hash a password is the moment someone proves they know it by typing it in — everything about this design follows from taking that moment seriously.</blockquote>
+                <p>One subtlety worth calling out: why put the older algorithm first in the scheme list rather than the newer one? Because list order is a policy dial, not a ranking of algorithm age. If bcrypt is still the organization's accepted standard and argon2 is merely tolerated for old hashes, bcrypt goes first. The day that standard changes, flipping the order is the entire deployment — every user on the old scheme migrates silently on their next login, no forced reset, no email campaign.</p>
+                <p>Two caveats shaped how this gets operated safely rather than left to chance. First, dormant users never upgrade — the migration only reaches people who actually log in, so accounts idle for years keep old hashes, and if the old scheme were ever truly broken those accounts would still need a forced reset in the end. Second, a scheme can never be dropped from the accepted list while any user still has a hash under it — pruning the list is only safe once the data confirms that scheme is actually gone from the user base, not on a timeline picked in advance.</p>
+
+                <h2>The outcome</h2>
+                <p>The database converges toward the current algorithm one login at a time, with the user experiencing nothing different — no reset email, no forced re-authentication, no visible event at all. The cost of a future algorithm migration collapses to a one-line configuration change, because the upgrade machinery is already live and running on every login rather than something that has to be built under pressure the day an algorithm is declared broken. The investment is in having the pattern in place before it's needed; the actual migration, when it happens, is free.</p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

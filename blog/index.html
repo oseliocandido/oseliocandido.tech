@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Articles — Oselio Candido</title>
+    <meta name="description" content="Engineering articles across the whole stack — backend APIs, frontend UX, CI/CD, architecture, and data platforms — the reasoning behind the decision, not just the tools used to build it.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../css/style.css">
+    <link rel="stylesheet" href="../css/components.css">
+</head>
+<body>
+
+    <!-- ===================== NAVIGATION ===================== -->
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../index.html"><span class="nav__logo">OC</span></a>
+            <ul class="nav__links">
+                <li><a href="../index.html#hero">Home</a></li>
+                <li><a href="../index.html#about">About</a></li>
+                <li><a href="./">Articles</a></li>
+                <li><a href="../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- ===================== ARTICLES ===================== -->
+    <section id="articles" class="section article-index">
+        <div class="container">
+            <a href="../index.html" class="page-back reveal">← Back to home</a>
+            <h1 class="section__title reveal">Articles</h1>
+            <p class="section__subtitle reveal">Rather than focusing on the final solution, each article explores the thinking behind it: the problem, the alternatives, the decision, and the outcome.</p>
+
+            <div class="filter-bar reveal" id="articleFilterBar"></div>
+            <div class="filter-bar filter-bar--tags" id="tagFilterBar" hidden></div>
+
+            <div class="article-grid" id="articleGrid"></div>
+
+        </div>
+    </section>
+
+    <script src="../data/articles.js"></script>
+
+    <script>
+    (function () {
+        const DISCIPLINE_LABELS = {};
+        (window.DISCIPLINES || []).forEach(function (d) { DISCIPLINE_LABELS[d.slug] = d.label; });
+
+        /* Published and in-progress first (newest on top); planned stubs last, as a roadmap. */
+        const articles = (window.ARTICLES || []).slice().sort(function (a, b) {
+            const aPlanned = a.status === 'planned' ? 1 : 0;
+            const bPlanned = b.status === 'planned' ? 1 : 0;
+            if (aPlanned !== bPlanned) return aPlanned - bPlanned;
+            return aPlanned ? a.date.localeCompare(b.date) : b.date.localeCompare(a.date);
+        });
+
+        const filterBar = document.getElementById('articleFilterBar');
+        const tagBar = document.getElementById('tagFilterBar');
+        const articleGrid = document.getElementById('articleGrid');
+
+        let activeDiscipline = 'all';
+        let activeTag = null;
+
+        function formatDate(iso) {
+            const d = new Date(iso + 'T00:00:00');
+            return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        }
+
+        function statusBadge(status) {
+            if (status === 'in-progress') return '<span class="status-badge status-badge--progress">In progress</span>';
+            if (status === 'planned') return '<span class="status-badge status-badge--planned">Coming soon</span>';
+            return '';
+        }
+
+        /* ── Render cards ── */
+        function renderCards() {
+            articleGrid.innerHTML = articles.map(function (a) {
+                const clickable = a.status !== 'planned';
+                const tagEl = '<span class="article-card__tag">' + (DISCIPLINE_LABELS[a.discipline] || a.discipline) + '</span>';
+                const chips = '<span class="article-card__tags">' + a.tags.map(function (t) {
+                    return '<button type="button" class="tag-chip" data-tag="' + t + '">#' + t + '</button>';
+                }).join('') + '</span>';
+                const inner =
+                    '<span class="article-card__meta-row">' + tagEl + statusBadge(a.status) + '</span>' +
+                    '<span class="article-card__date">' + formatDate(a.date) + (a.readTime ? ' · ' + a.readTime + ' min read' : '') + '</span>' +
+                    '<h4 class="article-card__title">' + a.title + '</h4>' +
+                    '<p class="article-card__desc">' + a.desc + '</p>' +
+                    chips +
+                    (clickable ? '<span class="article-card__read">Read →</span>' : '');
+                if (clickable) {
+                    return '<a href="../articles/' + a.slug + '/" class="article-card reveal" data-discipline="' + a.discipline + '" data-tags="' + a.tags.join(' ') + '">' + inner + '</a>';
+                }
+                return '<div class="article-card article-card--planned reveal" data-discipline="' + a.discipline + '" data-tags="' + a.tags.join(' ') + '">' + inner + '</div>';
+            }).join('');
+        }
+
+        /* ── Render discipline pills with counts ── */
+        function renderPills() {
+            const counts = {};
+            articles.forEach(function (a) { counts[a.discipline] = (counts[a.discipline] || 0) + 1; });
+            let html = '<button type="button" class="filter-pill is-active" data-filter="all">All <span class="filter-pill__count">' + articles.length + '</span></button>';
+            (window.DISCIPLINES || []).forEach(function (d) {
+                if (!counts[d.slug]) return;
+                html += '<button type="button" class="filter-pill" data-filter="' + d.slug + '">' + d.label + ' <span class="filter-pill__count">' + counts[d.slug] + '</span></button>';
+            });
+            filterBar.innerHTML = html;
+        }
+
+        /* ── Apply combined discipline + tag filter ── */
+        function applyFilter() {
+            articleGrid.querySelectorAll('.article-card').forEach(function (card) {
+                const matchesDiscipline = activeDiscipline === 'all' || card.dataset.discipline === activeDiscipline;
+                const matchesTag = !activeTag || (' ' + card.dataset.tags + ' ').indexOf(' ' + activeTag + ' ') !== -1;
+                card.classList.toggle('is-hidden', !(matchesDiscipline && matchesTag));
+            });
+            if (activeTag) {
+                tagBar.hidden = false;
+                tagBar.innerHTML = '<button type="button" class="filter-pill filter-pill--tag is-active" data-clear-tag>#' + activeTag + ' ✕</button>';
+            } else {
+                tagBar.hidden = true;
+                tagBar.innerHTML = '';
+            }
+            articleGrid.querySelectorAll('.tag-chip').forEach(function (chip) {
+                chip.classList.toggle('is-active', chip.dataset.tag === activeTag);
+            });
+        }
+
+        if (filterBar && articleGrid) {
+            renderCards();
+            renderPills();
+
+            filterBar.addEventListener('click', function (e) {
+                const pill = e.target.closest('.filter-pill');
+                if (!pill) return;
+                filterBar.querySelectorAll('.filter-pill').forEach(function (p) { p.classList.remove('is-active'); });
+                pill.classList.add('is-active');
+                activeDiscipline = pill.dataset.filter;
+                if (activeDiscipline === 'all') activeTag = null;
+                applyFilter();
+            });
+
+            tagBar.addEventListener('click', function (e) {
+                if (e.target.closest('[data-clear-tag]')) {
+                    activeTag = null;
+                    applyFilter();
+                }
+            });
+
+            articleGrid.addEventListener('click', function (e) {
+                const chip = e.target.closest('.tag-chip');
+                if (!chip) return;
+                e.preventDefault();
+                e.stopPropagation();
+                activeTag = activeTag === chip.dataset.tag ? null : chip.dataset.tag;
+                applyFilter();
+            });
+        }
+
+        /* ── Reveal animation (after cards exist) ── */
+        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!prefersReducedMotion) {
+            const revealEls = document.querySelectorAll('.reveal');
+            const revealObserver = new IntersectionObserver(function (entries) {
+                entries.forEach(function (entry) {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.remove('reveal-hidden');
+                        revealObserver.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+
+            revealEls.forEach(function (el) {
+                el.classList.add('reveal-hidden');
+                revealObserver.observe(el);
+            });
+        }
+
+        /* ── Nav scroll progress ── */
+        const progressBar = document.getElementById('navProgress');
+        if (progressBar) {
+            function updateProgress() {
+                const scrollTop = window.scrollY;
+                const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+                const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+                progressBar.style.width = pct + '%';
+            }
+            window.addEventListener('scroll', updateProgress, { passive: true });
+            window.addEventListener('resize', updateProgress);
+            updateProgress();
+        }
+    })();
+    </script>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer__grid">
+                <div class="footer__brand">
+                    <span class="footer__logo">Oselio Candido</span>
+                    <p class="footer__desc">Engineering decisions that scale businesses — reliable data platforms, cloud architecture, and systems built to stay maintainable years after deployment.</p>
+                </div>
+                <nav class="footer__nav" aria-label="Footer">
+                    <a href="../index.html#about">About</a>
+                    <a href="./">Articles</a>
+                    <a href="../index.html#contact">Contact</a>
+                </nav>
+                <div class="footer__social">
+                    <a href="https://www.linkedin.com/in/oseliocandido/" class="footer__social-link" target="_blank" rel="noopener noreferrer">
+                        <span class="footer__social-icon">in</span>
+                        <span>LinkedIn</span>
+                    </a>
+                </div>
+            </div>
+            <div class="footer__bottom">
+                <p class="footer__copyright">© 2026 Oselio Candido</p>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>

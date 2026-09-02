@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Excel to Databricks: Building a Metadata-Driven Ingestion Framework — Oselio Candido</title>
+    <meta name="description" content="Databricks has no native Excel ingestion. How I built a metadata-driven, config-table-first framework — factory-routed handlers for Excel, CSV, and Delta sources, column validation, and an exact-once audit trail.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="stylesheet" href="../../css/components.css">
+    <link rel="stylesheet" href="../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../../index.html#about">About</a></li>
+                <li><a href="../../blog/">Articles</a></li>
+                <li><a href="../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+    <main class="article-page">
+        <div class="container">
+            <div class="article-page__header">
+                <a href="../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">Ingestion</span>
+                <h1 class="article-page__title">Excel to Databricks: Building a Metadata-Driven Ingestion Framework</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Jun 30, 2026</span>
+                    <span>·</span>
+                    <span>12 min read</span>
+                </div>
+            </div>
+            <article class="article-page__body">
+
+                <p>
+                    Databricks has no native way to ingest an Excel workbook — no built-in reader, no sheet discovery, nothing. It reads Parquet, CSV, and Delta out of the box, but an <code>.xlsx</code> or <code>.xlsb</code> file was on its own. HR and warehouse-operations teams kept running the business on exactly those files, so I built the missing piece: a metadata-driven ingestion framework that handles Excel, CSV, and Delta-to-Delta sources through one config-table-first, factory-routed design.
+                </p>
+
+                <div class="article-page__diagram">
+                    <div class="flow-diagram">
+                        <div class="flow-diagram__node">Source file<small>Excel / CSV / Delta table</small></div>
+                        <div class="flow-diagram__arrow"></div>
+                        <div class="flow-diagram__node">File config<small>ConnectionFileConfig</small></div>
+                        <div class="flow-diagram__arrow"></div>
+                        <div class="flow-diagram__node">SourceHandlerFactory.create<small>dict lookup by source_type</small></div>
+                        <div class="flow-diagram__branch">
+                            <div class="flow-diagram__node"><span class="flow-diagram__branch__label">excel</span>ExcelFileHandler<small>pandas + openpyxl / pyxlsb</small></div>
+                            <div class="flow-diagram__node"><span class="flow-diagram__branch__label">csv</span>CSVFileHandler<small>read_parameters</small></div>
+                            <div class="flow-diagram__node"><span class="flow-diagram__branch__label">delta_table</span>DeltaTableHandler</div>
+                        </div>
+                        <div class="flow-diagram__arrow"></div>
+                        <div class="flow-diagram__node">ColumnNameParser<small>validate_all + normalize</small></div>
+                        <div class="flow-diagram__arrow"></div>
+                        <div class="flow-diagram__node">DataWriter<small>append or overwrite</small></div>
+                        <div class="flow-diagram__branch">
+                            <div class="flow-diagram__node">Target Delta table</div>
+                            <div class="flow-diagram__node">file_load_control<small>SUCCESS / ERROR / MISSING_CONFIG</small></div>
+                        </div>
+                    </div>
+                </div>
+
+                <h2>The Problem</h2>
+
+                <p>
+                    Databricks had, and still has, no first-class way to ingest Excel workbooks. It reads Parquet, CSV, and Delta natively, but an <code>.xlsx</code> or <code>.xlsb</code> file dropped into a landing location needs someone to write the pandas/openpyxl code, handle sheet discovery, and wire the result into a Spark DataFrame by hand. HR and warehouse-operations teams were uploading exactly those kinds of files, and every source that landed got its own one-off notebook: no shared load control, columns read positionally instead of by name, and no consistent way to know whether a file had already been processed.
+                </p>
+                <p>
+                    That pattern doesn't scale past a handful of sources. Each new spreadsheet meant a new notebook, copy-pasted from the last one and quietly diverging from it. Nobody could answer, with confidence, "did file X load successfully last night" without opening that file's specific notebook and reading its print statements. Column order was assumed rather than checked, so a source system reordering two columns in an export would silently write wrong values into the wrong fields downstream — no error, no warning, just a bad number in a report weeks later.
+                </p>
+
+                <h2>What Is a Metadata-Driven Ingestion Framework</h2>
+
+                <p>
+                    A metadata-driven framework inverts the usual relationship between code and configuration. Instead of writing a notebook per source and hard-coding that source's file path, target table, and load behaviour into the notebook itself, you write the ingestion logic once — read a file, validate its columns, write it to Delta, log the result — and describe every individual source as a row in a config table: its path, its target table, whether it loads by append or overwrite, which business domain it belongs to. The code reads the config at runtime and behaves accordingly. Onboarding a new source becomes a data change (add a row) rather than a code change (write a notebook).
+                </p>
+                <p>
+                    The other half of the pattern is routing by declared type rather than by inspecting the file. A config row says what kind of source it is — Excel, CSV, or a Delta-to-Delta transfer — and a factory maps that declared type to the handler responsible for reading it. New source types are added by registering a new handler, not by extending a chain of conditionals that already handles the existing ones.
+                </p>
+
+                <h2>The Alternatives</h2>
+
+                <p>
+                    A few paths were available before settling on this design, and none of them scaled the same way:
+                </p>
+                <ul>
+                    <li><strong>Keep writing one notebook per source.</strong> This was the status quo. It requires zero framework investment up front, but every new file is a new notebook with its own copy-pasted logic, and there is no shared audit trail — the failure mode this framework exists to close.</li>
+                    <li><strong>Drive ingestion off notebook widgets/parameters.</strong> Widgets let a single notebook serve multiple sources by passing in a path and a table name at run time. It's a step up, but the config still lives in whatever orchestration tool schedules the notebook, not in a versioned, queryable table — there's no single place to see every active source and its settings, and no natural place to record validated types.</li>
+                    <li><strong>Adopt a third-party ingestion/ETL tool.</strong> Off-the-shelf ingestion tools exist, but none of the ones evaluated had first-class Excel support either — the same sheet-discovery and encoding problems would still need custom code, just wrapped inside someone else's framework and harder to debug.</li>
+                    <li><strong>Build a config-table-first framework with typed, per-source-type handlers.</strong> More upfront design work — a validation layer, a factory, a shared writer — but every future source type is an isolated addition, and every source shares the same audit trail regardless of format.</li>
+                </ul>
+                <p>
+                    The fourth option was the only one that made the audit trail and column validation apply uniformly, rather than being something each notebook author had to remember to add.
+                </p>
+
+                <h2>The Decision</h2>
+
+                <p>
+                    The framework started with just the Excel path. CSV and Delta-to-Delta support were added later without touching the orchestration logic, because source-type resolution was pushed into a factory from day one: each source type maps to a handler class in a dict, and the factory looks up the right one at runtime instead of an if/elif chain growing wherever ingestion is triggered.
+                </p>
+
+<pre><code class="language-python">_HANDLERS: Dict[SourceType, Type[SourceHandler]] = {
+    SourceType.EXCEL: ExcelFileHandler,
+    SourceType.CSV: CSVFileHandler,
+    SourceType.DELTA_TABLE: DeltaTableHandler,
+}
+
+class SourceHandlerFactory:
+    """Factory for creating source handlers based on source_type field.
+
+    No isinstance checks - uses source_type configuration field to route.
+    """
+
+    @staticmethod
+    def create(
+        config: ConnectionFileConfig,
+        spark: SparkSession,
+        run_id: str,
+        catalog: str,
+        schema: str,
+    ) -> SourceHandler:
+        try:
+            handler_cls = _HANDLERS[config.source_type]
+        except KeyError:
+            raise ValueError(
+                f"Unsupported source_type: '{config.source_type}'. "
+                f"Expected one of: {', '.join(t.value for t in _HANDLERS)}"
+            ) from None
+
+        return handler_cls(spark, run_id, catalog, schema)
+</code></pre>
+
+                <p>
+                    Adding CSV and Delta table support was an isolated change each time: a new handler class, one line in the handler registry, no edits anywhere else. <code>SourceType</code> also carries a fourth value, <code>PARQUET</code>, reserved for when a Parquet source needs the same config-driven treatment.
+                </p>
+
+                <h3>Config as the Source of Truth</h3>
+
+                <p>
+                    Every ingestion flow is described by a config row, not a notebook parameter. The config model uses a discriminated union on <code>source_type</code>, so a file-based config (Excel/CSV/Parquet) and a Delta-to-Delta config are structurally different models, and the validation library picks the right one automatically when validating a row.
+                </p>
+
+<pre><code class="language-python">class SourceType(str, Enum):
+    EXCEL = "excel"
+    CSV = "csv"
+    PARQUET = "parquet"
+    DELTA_TABLE = "delta_table"
+
+class FileSourceConfig(BaseModel):
+    """Base configuration for any file-based source."""
+    file_path: str = Field(pattern=r"^[^/]+/[^/]+$")
+    file_nm: str
+    connection_id: int = Field(gt=0)
+    country_id: Literal["ALL", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8", "C9"]  # ten-plus ISO-style country codes in the real config
+    partition_fields: str
+    target_catalog: str
+    target_schema: str
+    target_table_nm: str
+    is_active: bool
+    load_type: Literal["append", "overwrite"]
+    is_automerge: bool
+    source_type: Literal[SourceType.EXCEL, SourceType.CSV, SourceType.PARQUET]
+    domain: Literal["ops", "hr"]
+    overwrite_ymd: bool
+    read_parameters: Optional[Dict[str, str]] = None  # required only for source_type="csv"
+
+    class Config:
+        frozen = True
+
+    @model_validator(mode="after")
+    def validate_read_parameters_scope(self) -> "FileSourceConfig":
+        if self.source_type == SourceType.CSV and self.read_parameters is None:
+            raise ValueError("read_parameters is required for source_type='csv'")
+        if self.source_type != SourceType.CSV and self.read_parameters is not None:
+            raise ValueError("read_parameters is only valid for source_type='csv'")
+        return self
+
+class DeltaTableFileConfig(BaseModel):
+    """Delta tables are direct table-to-table transfers - no file path or volume."""
+    file_nm: str  # catalog.schema.table
+    source_type: Literal[SourceType.DELTA_TABLE]
+    load_type: Literal["append", "overwrite"]
+    is_automerge: bool
+    domain: Literal["ops", "hr"]
+    # ...same target_catalog / target_schema / target_table_nm / is_active fields
+
+ConnectionFileConfig = Annotated[
+    Union[FileSourceConfig, DeltaTableFileConfig], Field(discriminator="source_type")
+]
+</code></pre>
+
+                <p>
+                    Both models are frozen — immutable once validated — and each carries its own field-level validators: <code>file_nm</code> on the Delta config must resolve to a real <code>catalog.schema.table</code> triple, while <code>read_parameters</code> on the file config is rejected outright for any source type other than CSV. There is deliberately no free-standing "incremental" load strategy — <code>load_type</code> is either <code>append</code> or <code>overwrite</code>, and that value is passed straight through to Spark's <code>.mode()</code> at write time.
+                </p>
+                <p>
+                    Domain (<code>ops</code> or <code>hr</code>) is a field on the config itself, so the same handlers and factory serve both business domains — the difference is which config rows get loaded and validated for a given run, not a code branch.
+                </p>
+
+                <blockquote>
+                    A config row that fails validation should fail loudly before a single row of data is read — not three steps later as a cryptic Spark error with no source file in sight.
+                </blockquote>
+
+                <h3>Column Validation Before Anything Touches a Table</h3>
+
+                <p>
+                    Real HR and operations spreadsheets are messy in ways a schema definition doesn't anticipate: files saved with the wrong encoding, blank separator columns holding multiple tables inside a single sheet, sheets with names that shouldn't be ingested at all. Column validation runs before any data reaches a target table and rejects a batch outright rather than let it write silently-wrong rows.
+                </p>
+
+<pre><code class="language-python">REPLACEMENT_CHAR = "�"  # inline in the real source, extracted here for clarity
+
+class ColumnNameParser:
+    """Validates and normalizes column headers."""
+
+    @staticmethod
+    def validate(column_name: str) -> None:
+        if column_name is None:
+            raise ValueError("Column name cannot be None")
+
+        name = column_name.strip()
+        if name == "":
+            raise ValueError("Column name cannot be empty")
+
+        if name.lower().startswith("unnamed"):
+            raise ValueError(
+                f"Invalid column header '{column_name}'. "
+                "Excel files should not contain 'Unnamed:' columns."
+            )
+
+    @classmethod
+    def validate_all(cls, columns: List[str]) -> bool:
+        if columns is None:
+            raise ValueError("Column names list cannot be None")
+
+        if len(columns) < 2:
+            raise ValueError(f"Expected at least 2 columns, but found {len(columns)}")
+
+        if any(REPLACEMENT_CHAR in c for c in columns):
+            raise ValueError(
+                "One or more column names contain an invalid character. "
+                "This may indicate an encoding issue with the file."
+            )
+
+        for name in columns:
+            cls.validate(name)
+
+        return True
+
+    @staticmethod
+    def normalize_column_names(name: str) -> str:
+        name = name.strip().lower()
+        name = re.sub(r"\s+", "_", name)    # whitespace to underscore
+        name = re.sub(r"[^\w_]", "", name)  # remove non-word except underscore
+        name = re.sub(r"_+", "_", name)     # collapse repeats
+        return name.strip("_")
+</code></pre>
+
+                <p>
+                    The "unnamed" check exists because of how pandas reads Excel: a blank header cell becomes a column literally named <code>Unnamed: 7</code>. Left alone, that's a landmine — but it's also the signal used to solve a real problem: several HR workbooks pack more than one table into a single sheet, separated by a blank column. A dedicated extraction step treats every <code>Unnamed:</code> column as a table boundary, splits the sheet into sub-DataFrames at those positions, renames each group back to the canonical (first-group) column names, and unions them with a group tag — validation only runs after extraction has removed the separators it needed to do its job.
+                </p>
+                <p>
+                    Sheet discovery has its own edge cases. Sheets named things like "assumptions" or "hiddensheet" are skipped, and by default a file is expected to contain exactly one processable sheet, raising an error otherwise. Two known files break that default, so the exceptions are made explicit rather than hidden inside conditionals — one national file is declared to process every sheet it contains, and another is declared to only ever read two specifically-named sheets. Making an exception a named, explicit rule rather than an inline conditional means the next exception is one more rule, not a rewritten branch.
+                </p>
+                <p>
+                    For the binary format itself, <code>.xlsb</code> files are routed to the <code>pyxlsb</code> engine while pandas falls back to its <code>openpyxl</code> default for <code>.xlsx</code>/<code>.xls</code> — <code>.xlsb</code> is a different binary layout under the hood, and none of pandas' other engines can read it. For CSV, the separator, header row, and encoding hints live in the config row's <code>read_parameters</code> dict and get passed straight through to Spark's reader — a new parameter is a config change, not a code change. That flexibility does come at a cost: <code>read_parameters</code> is a free-form JSON dict rather than a typed sub-model, which was a reasonable shortcut early on but becomes friction as the number of CSV sources grows and nobody can see, without reading the dict itself, which keys are actually supported.
+                </p>
+
+                <h3>Writing Once, Auditing Every Time</h3>
+
+                <p>
+                    The load strategy is deliberately narrow: <code>load_type</code> on the config is either <code>append</code> or <code>overwrite</code>, and the writer passes that value straight into Spark's <code>.mode()</code> — there's no separate incremental-filtering layer to keep in sync with the config.
+                </p>
+
+<pre><code class="language-python">class DataWriter:
+    @staticmethod
+    def write_dataframe(spark, df, file_config, run_id, source_name,
+                         source_modified_timestamp, source_path=None):
+        full_table_name = file_config.full_target_name
+        df_with_metadata = DataWriter.add_metadata_columns(
+            df, file_config, run_id, source_name, source_modified_timestamp, source_path
+        )
+
+        if file_config.is_automerge:
+            spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "true")
+
+        try:
+            (
+                df_with_metadata.write.partitionBy(file_config.partition_fields_list)
+                .mode(file_config.load_type)
+                .saveAsTable(full_table_name)
+            )
+        finally:
+            if file_config.is_automerge:
+                spark.conf.set("spark.databricks.delta.schema.autoMerge.enabled", "false")
+</code></pre>
+
+                <p>
+                    Every write also stamps metadata columns — country, source name, load timestamp, run id, and, for file sources, source-modified timestamp and source path. <code>is_automerge</code> toggles Delta's schema auto-merge just for the duration of that write and turns it back off in a <code>finally</code> block, so a config with automerge on can't leave the session setting enabled for the next job sharing the cluster.
+                </p>
+                <p>
+                    The exact-once guarantee doesn't live in the write path — it lives in an audit record written after each file: source path, source name, source-modified timestamp, and a status of <code>SUCCESS</code>, <code>ERROR</code>, or <code>MISSING_CONFIG</code>. A rerun checks that record before reading the file; anything already <code>SUCCESS</code> for the same modified timestamp is skipped, and anything that failed gets picked up automatically on the next run.
+                </p>
+
+                <h2>The Outcome</h2>
+
+                <p>
+                    The framework started as an Excel-only ingestion path and grew into a multi-format system through several rounds of iteration, adding native CSV ingestion and Delta-to-Delta table ingestion as separate handlers behind the same factory. Neither addition touched the orchestration layer — the payoff of routing on <code>source_type</code> from the start instead of branching per source.
+                </p>
+                <p>
+                    The column validation — catching encoding artifacts, too-few-columns, and stray "Unnamed:" headers before they reach a target table — closed a class of silent failure that used to require someone noticing a wrong number in a downstream report and working backward to the source file. Now a bad file fails loudly, at ingestion time, with the exact reason in the error message.
+                </p>
+                <p>
+                    Onboarding a new source today means adding a config row, not writing a new notebook. The framework itself doesn't change — only the config table grows. It isn't glamorous engineering, it's plumbing, but reliable plumbing is what makes the rest of the platform trustworthy, and that's ultimately what this kind of work is about.
+                </p>
+
+            </article>
+        </div>
+    </main>
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

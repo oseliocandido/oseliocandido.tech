@@ -1,0 +1,373 @@
+/* ===================================================
+   Article Page Layout
+   =================================================== */
+.article-page {
+    padding: 60px 0 100px;
+}
+
+.article-page__header {
+    margin-bottom: 48px;
+    padding-bottom: 32px;
+    border-bottom: 1px solid var(--border);
+}
+
+.article-page__back {
+    display: inline-block;
+    font-size: 13px;
+    color: var(--muted);
+    margin-bottom: 20px;
+    transition: color 0.15s;
+}
+
+.article-page__back:hover {
+    color: var(--accent);
+    text-decoration: none;
+}
+
+.article-page__tag {
+    display: inline-block;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 12px;
+}
+
+.article-page__title {
+    font-size: clamp(24px, 4vw, 40px);
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.5px;
+    margin-bottom: 16px;
+}
+
+.article-page__meta {
+    display: flex;
+    gap: 8px;
+    font-size: 13px;
+    color: var(--muted);
+    align-items: center;
+}
+
+/* ===================================================
+   Article Body Typography
+   =================================================== */
+.article-page__body {
+    max-width: 680px;
+}
+
+.article-page__body p {
+    color: var(--muted);
+    font-size: 16px;
+    line-height: 1.8;
+    margin-bottom: 20px;
+}
+
+.article-page__body h2 {
+    font-size: 22px;
+    font-weight: 700;
+    margin: 40px 0 12px;
+    color: var(--text);
+    letter-spacing: -0.3px;
+}
+
+.article-page__body h3 {
+    font-size: 17px;
+    font-weight: 600;
+    margin: 28px 0 10px;
+    color: var(--text);
+}
+
+.article-page__body ul,
+.article-page__body ol {
+    padding-left: 24px;
+    margin-bottom: 20px;
+}
+
+.article-page__body li {
+    color: var(--muted);
+    font-size: 15px;
+    line-height: 1.7;
+    margin-bottom: 6px;
+}
+
+.article-page__body pre:not(.mermaid) {
+    background-color: var(--code-bg);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: var(--radius);
+    padding: 20px;
+    overflow-x: auto;
+    margin-bottom: 24px;
+}
+
+.article-page__body pre.mermaid {
+    background: transparent;
+    color: initial;
+    font-family: initial;
+    font-size: initial;
+    line-height: initial;
+}
+
+.article-page__body code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    color: #e5e5e5;
+}
+
+/* Syntax highlighting (Prism.js) — tokens mapped to the site's own palette
+   rather than a generic theme, so code reads as part of the same system. */
+.article-page__body pre .token.comment,
+.article-page__body pre .token.prolog,
+.article-page__body pre .token.doctype,
+.article-page__body pre .token.cdata { color: #8a8a8a; font-style: italic; }
+
+.article-page__body pre .token.keyword,
+.article-page__body pre .token.important,
+.article-page__body pre .token.atrule { color: var(--orange); }
+
+.article-page__body pre .token.string,
+.article-page__body pre .token.char,
+.article-page__body pre .token.attr-value { color: #9fb8e0; }
+
+.article-page__body pre .token.function,
+.article-page__body pre .token.class-name { color: #ffffff; }
+
+.article-page__body pre .token.number,
+.article-page__body pre .token.boolean { color: var(--orange); }
+
+.article-page__body pre .token.property,
+.article-page__body pre .token.tag,
+.article-page__body pre .token.attr-name { color: #9fb8e0; }
+
+.article-page__body pre .token.punctuation,
+.article-page__body pre .token.operator { color: #9a9a9a; }
+
+.article-page__body pre .token.builtin,
+.article-page__body pre .token.decorator { color: var(--orange); }
+
+.article-page__body p code,
+.article-page__body li code,
+.article-page__body h2 code,
+.article-page__body h3 code {
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 13px;
+    color: var(--text);
+}
+
+.article-page__body blockquote {
+    border-left: 3px solid var(--accent);
+    margin: 24px 0;
+    color: var(--muted);
+    font-style: italic;
+    background-color: var(--accent-dim);
+    border-radius: 0 var(--radius) var(--radius) 0;
+    padding: 12px 16px;
+}
+
+.article-page__body table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: 8px 0 28px;
+    font-size: 13px;
+    overflow-x: auto;
+    display: block;
+}
+
+.article-page__body th,
+.article-page__body td {
+    text-align: left;
+    padding: 10px 14px;
+    border: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+.article-page__body th {
+    background-color: var(--surface-2);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.4px;
+    text-transform: uppercase;
+    color: var(--muted);
+}
+
+.article-page__body td {
+    font-family: var(--font-mono);
+    color: var(--text);
+}
+
+.article-page__body tbody tr:nth-child(even) {
+    background-color: var(--surface);
+}
+
+.article-page__diagram {
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    margin: 8px 0 28px;
+    overflow-x: auto;
+    display: flex;
+    justify-content: center;
+}
+
+.article-page__body figure {
+    margin: 8px 0 28px;
+}
+
+.article-page__body figure img {
+    display: block;
+    width: 100%;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+}
+
+.article-page__body figcaption {
+    margin-top: 10px;
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+}
+
+/* For narrow-aspect screenshots (e.g. a small modal) that look oversized
+   and soft when stretched to the full article width. */
+.article-page__body figure.figure--narrow img {
+    width: auto;
+    max-width: 320px;
+    margin: 0 auto;
+}
+
+.article-page__body figure.figure--narrow {
+    text-align: center;
+}
+
+.article-page__diagram .mermaid {
+    max-width: 100%;
+}
+
+/* ===================================================
+   Flow Diagram — plain HTML/CSS replacement for mermaid,
+   which renders with unreadably light default colors.
+   Use for simple linear/branching flows: a vertical chain
+   of .flow-diagram__node boxes joined by .flow-diagram__arrow
+   connectors, ending optionally in a .flow-diagram__branch
+   fan-out for the last node's multiple children.
+   =================================================== */
+.flow-diagram {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    background-color: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px 20px 28px;
+    margin: 8px 0 28px;
+    overflow-x: auto;
+}
+
+.flow-diagram__node {
+    background-color: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 10px 18px;
+    font-family: var(--font-mono);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    text-align: center;
+    white-space: nowrap;
+}
+
+.flow-diagram__node small {
+    display: block;
+    margin-top: 3px;
+    font-family: var(--font-sans, inherit);
+    font-weight: 400;
+    font-size: 11px;
+    color: var(--muted);
+    white-space: normal;
+}
+
+.flow-diagram__arrow {
+    width: 1px;
+    height: 26px;
+    background-color: var(--border);
+    position: relative;
+    flex-shrink: 0;
+}
+
+.flow-diagram__arrow::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid var(--muted);
+}
+
+.flow-diagram__branch {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 20px 28px;
+    padding-top: 26px;
+    position: relative;
+    width: 100%;
+}
+
+.flow-diagram__branch::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 18%;
+    right: 18%;
+    height: 1px;
+    background-color: var(--border);
+}
+
+.flow-diagram__branch > .flow-diagram__node {
+    position: relative;
+}
+
+.flow-diagram__branch > .flow-diagram__node::before {
+    content: '';
+    position: absolute;
+    top: -26px;
+    left: 50%;
+    width: 1px;
+    height: 26px;
+    background-color: var(--border);
+}
+
+.flow-diagram__branch__label {
+    position: absolute;
+    top: -20px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-family: var(--font-sans, inherit);
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    background-color: var(--surface);
+    padding: 0 4px;
+}
+
+.flow-diagram__arrow-label {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    font-family: var(--font-sans, inherit);
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    background-color: var(--surface);
+    padding: 0 4px;
+}

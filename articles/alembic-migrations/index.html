@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Migrations as Code: Eight Advantages of Version-Controlled Database Changes — Oselio Candido</title>
+    <meta name="description" content="Why database migrations belong in git: auditability, reproducibility, reversibility, and the advantages across dev, staging, and production environments.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="stylesheet" href="../../css/components.css">
+    <link rel="stylesheet" href="../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../../index.html#about">About</a></li>
+                <li><a href="../../blog/">Articles</a></li>
+                <li><a href="../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Article -->
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">Backend Engineering</span>
+                <h1 class="article-page__title">Migrations as Code: Eight Advantages of Version-Controlled Database Changes</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Jul 2026</span>
+                    <span>·</span>
+                    <span>5 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <h2>What is a migration?</h2>
+                <p>A migration is a versioned script that modifies your database schema. It's tracked in version control alongside your application code, so every change to a table structure, column, index, or constraint has a commit history and a reason. No more "nobody knows when that column was added" or "somebody dropped this table in production and we're not sure why."</p>
+
+                <h2>Why version control migrations with code</h2>
+                <p>A migration lives in a file with a unique ID, an <code>upgrade()</code> function, and a <code>downgrade()</code> function. When you deploy, the database runs the upgrade path; if a release goes bad, downgrade rolls it back. Because migrations are code, they're reviewable in pull requests, they produce a complete audit trail, and they're reversible — no manual SQL scripts that someone has to remember how to unwind.</p>
+
+                <h2>Multi-environment advantages</h2>
+                <p>The same migration runs identically on your laptop, in staging, and in production. You don't get schema drift — a dev database that doesn't match staging, or a production schema nobody can fully describe. When a new environment spins up, it runs the entire migration chain from the start and lands on the exact same schema as production. There's no "run these files in this order, except skip this one" — everything is explicit, tracked, and reproducible.</p>
+
+                <h2>Why this matters</h2>
+                <ul>
+                    <li><strong>Reviewable in pull requests</strong> — Schema changes are code, so they go through the same code review process as application logic. Teammates can catch issues before they reach production.</li>
+                    <li><strong>Complete audit trail</strong> — Every schema change has a commit message, author, and timestamp. You know exactly who changed what and when.</li>
+                    <li><strong>Reversible</strong> — Each migration has an <code>upgrade()</code> and <code>downgrade()</code> function. If a release goes bad, you can roll back the schema to the previous state.</li>
+                    <li><strong>No schema drift</strong> — Dev, staging, and production all run the same migrations in the same order. No "this works on my machine" database schema problems.</li>
+                    <li><strong>Reproducible across environments</strong> — New environments spin up by running the entire migration chain from the start and land on the exact same schema as production.</li>
+                    <li><strong>Explicit and tracked</strong> — No "run these files in this order, except skip this one" confusion. Everything is recorded in version control.</li>
+                    <li><strong>Schema and code evolve together</strong> — Migrations live in the same pull request as the application code that depends on them, keeping them synchronized.</li>
+                    <li><strong>Auditable</strong> — You have a complete record of every schema change, why it happened, and who approved it.</li>
+                </ul>
+
+                <h2>What is Alembic?</h2>
+                <p>Alembic is SQLAlchemy's migration framework. It manages a table in your database called <code>alembic_version</code> that records which migration has most recently run. Each migration is a Python file with a revision ID and a pointer to the previous migration, creating a linked chain. You point Alembic at your database connection and your SQLAlchemy models, and it can autogenerate migration files by diffing your models against the live schema.</p>
+
+                <h2>Core commands</h2>
+
+                <p><strong><code>autogenerate</code></strong> — Alembic inspects your SQLAlchemy models and the current database schema, then drafts a migration file that captures the difference. It's not perfect (complex constraints sometimes need manual tweaking), but it handles the common cases: new tables, columns, indexes, and basic type changes. See the <a href="https://alembic.sqlalchemy.org/en/latest/index.html" target="_blank" rel="noopener noreferrer">Alembic documentation</a> for details.</p>
+
+                <p><strong><code>upgrade</code></strong> — Runs all pending migrations forward to bring the database to the target state. <code>upgrade head</code> takes it all the way to the latest; <code>upgrade +2</code> runs just the next two. Each migration executes its <code>upgrade()</code> function and records itself in the <code>alembic_version</code> table.</p>
+
+                <p><strong><code>downgrade</code></strong> — Rolls back migrations in reverse. <code>downgrade -1</code> undoes the most recent migration by running its <code>downgrade()</code> function. This is where the reversibility promise lives — if a migration broke the schema, you can undo it. <code>downgrade</code> is rarely used in production (you're usually trying to go forward, not backward), but it's invaluable for development and testing rollback procedures.</p>
+
+                <p><strong><code>check</code></strong> — Compares the database schema against your SQLAlchemy models and reports any mismatches. It's useful in CI pipelines to catch schema drift — situations where the database has drifted from what the code expects (maybe someone ran a manual SQL script, or a migration failed partway through).</p>
+
+                <h2>A real migration</h2>
+                <p>When a legacy cash-register <code>balance</code> table was retired in favor of proper ledger tables, the upgrade was straightforward:</p>
+                <pre><code class="language-python">def upgrade() -> None:
+    op.drop_index("ix_balance_date", table_name="balance")
+    op.drop_index("ix_balance_id", table_name="balance")
+    op.drop_table("balance")</code></pre>
+
+                <p>But the downgrade had to rebuild the entire table structure so the rollback was complete and safe:</p>
+                <pre><code class="language-python">def downgrade() -> None:
+    op.create_table(
+        "balance",
+        sa.Column("id", sa.BIGINT(), autoincrement=True, nullable=False),
+        sa.Column("employee_id", sa.BIGINT(), nullable=False),
+        sa.Column("date", sa.DATE(), nullable=False),
+        sa.Column("period", sa.VARCHAR(length=20), nullable=False),
+        sa.Column(
+            "cash_value",
+            sa.NUMERIC(precision=10, scale=2),
+            server_default=sa.text("0"),
+            nullable=False,
+        ),
+        sa.CheckConstraint(
+            "period::text = ANY (ARRAY['Day'::text, 'Evening'::text])",
+            name="check_period",
+        ),
+        sa.ForeignKeyConstraint(
+            ["employee_id"],
+            ["employees.id"],
+            name="balance_employee_id_fkey",
+            ondelete="CASCADE",
+        ),
+        sa.PrimaryKeyConstraint("id", name="balance_pkey"),
+        sa.UniqueConstraint("date", "period", name="unique_balance_record"),
+    )
+    op.create_index("ix_balance_id", "balance", ["id"], unique=False)
+    op.create_index("ix_balance_date", "balance", ["date"], unique=False)</code></pre>
+
+                <blockquote>A downgrade must restore the schema to the exact state it was before the upgrade ran. If it doesn't, a rollback looks like it worked while quietly corrupting your data model.</blockquote>
+
+                <h2>The outcome</h2>
+                <p>Schema changes become auditable, reproducible across environments, and reversible. Your migrations live in the same pull request as the application code that depends on them, so the schema and the code that queries it evolve together. Deployments include schema changes as code, not as manual SQL scripts or runbooks that someone has to remember.</p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

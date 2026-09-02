@@ -1,0 +1,471 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oselio Candido — Engineering Decisions Behind Production Systems</title>
+    <meta name="description" content="Designing data platforms and backend systems that stay reliable as businesses grow — architectural decisions, production incidents, trade-offs, and performance optimizations behind real software systems.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="css/style.css">
+    <link rel="stylesheet" href="css/components.css">
+</head>
+<body>
+
+    <!-- ===================== NAVIGATION ===================== -->
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <span class="nav__logo">OC</span>
+            <ul class="nav__links">
+                <li><a href="#hero">Home</a></li>
+                <li><a href="#about">About</a></li>
+                <li><a href="blog/">Articles</a></li>
+                <li><a href="#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- ===================== HERO ===================== -->
+    <section id="hero" class="hero">
+        <div class="container">
+            <div class="hero__eyebrow">Engineering Decisions Behind Production Systems</div>
+            <h1 class="hero__name">Oselio Candido</h1>
+            <p class="hero__tagline">
+                Designing data platforms and backend systems that stay reliable as businesses grow.
+            </p>
+            <p class="hero__subtitle">
+                I write about the engineering decisions behind production software — architecture, reliability, performance, security, and the trade-offs that determine whether systems remain maintainable years later.
+            </p>
+            <div class="pipeline" aria-hidden="true">
+                <div class="pipeline__track" id="pipelineTrack">
+                    <div class="pipeline__stage" data-stage="0">
+                        <span class="pipeline__dot"></span>
+                        <span class="pipeline__label">Extract</span>
+                    </div>
+                    <span class="pipeline__connector"></span>
+                    <div class="pipeline__stage" data-stage="1">
+                        <span class="pipeline__dot"></span>
+                        <span class="pipeline__label">Validate</span>
+                    </div>
+                    <span class="pipeline__connector"></span>
+                    <div class="pipeline__stage" data-stage="2">
+                        <span class="pipeline__dot"></span>
+                        <span class="pipeline__label">Transform</span>
+                    </div>
+                    <span class="pipeline__connector"></span>
+                    <div class="pipeline__stage" data-stage="3">
+                        <span class="pipeline__dot"></span>
+                        <span class="pipeline__label">Test</span>
+                    </div>
+                    <span class="pipeline__connector"></span>
+                    <div class="pipeline__stage" data-stage="4">
+                        <span class="pipeline__dot"></span>
+                        <span class="pipeline__label">Deploy</span>
+                    </div>
+                    <span class="pipeline__connector"></span>
+                    <div class="pipeline__stage" data-stage="5">
+                        <span class="pipeline__dot"></span>
+                        <span class="pipeline__label">Healthy</span>
+                    </div>
+                </div>
+                <div class="decision-card" id="decisionCard">
+                    <div class="decision-card__info">
+                        <span class="decision-card__eyebrow">What's Shipping Right Now</span>
+                        <h3 class="decision-card__title" id="decisionTitle">Sizing Compute as Code</h3>
+                        <span class="decision-card__category">Decision <span id="decisionNum">#127</span> · <span id="decisionCategory">Cost Optimization</span></span>
+                        <a class="decision-card__link" id="decisionLink" href="articles/reusable-job-clusters/" hidden>Read the case study →</a>
+                    </div>
+                    <div class="decision-card__log">
+                        <span class="decision-card__log-head">Live Log</span>
+                        <div class="decision-card__log-body" id="decisionLog"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===================== ABOUT ===================== -->
+    <section id="about" class="section">
+        <div class="container">
+            <h2 class="section__title reveal">About</h2>
+            <div class="about__grid">
+                <div class="about__text reveal">
+                    <p>I build platforms and backend systems that remain reliable long after the first deployment.</p>
+                    <p>I'm a data and platform engineer focused on designing systems that remain understandable, maintainable, and reliable as they evolve.</p>
+                    <p>Over the past five years I've worked across renewable energy, agribusiness, retail, and risk management, designing and modernizing data platforms on Azure and Databricks. My work has ranged from migrating legacy pipelines and scaling analytics across multiple domains to developing backend services, resolving production incidents, and improving data correctness.</p>
+                    <p>This isn't a collection of tutorials. It's a record of the engineering decisions behind real production systems — the trade-offs considered, the alternatives rejected, the mistakes made, and the measurable outcomes that followed.</p>
+                    <p>If you're interested in why systems succeed or fail over time rather than simply how they're built, you'll probably find something useful <a href="blog/">here</a>.</p>
+                </div>
+                <div class="about__meta">
+                    <div class="about__stat about__stat--wide">
+                        <span class="about__stat-number" data-count="5" data-suffix="+">5+</span>
+                        <span class="about__stat-label">Years Experience</span>
+                    </div>
+                    <div class="about__stat">
+                        <span class="about__stat-number" data-count="500" data-suffix="+">500+</span>
+                        <span class="about__stat-label">Merge Requests Shipped</span>
+                    </div>
+                    <div class="about__stat">
+                        <span class="about__stat-number" data-count="200" data-suffix="+">200+</span>
+                        <span class="about__stat-label">Features &amp; Fixes Delivered</span>
+                    </div>
+                    <div class="about__stat">
+                        <span class="about__stat-number" data-count="100" data-suffix="+">40+</span>
+                        <span class="about__stat-label">Data Products</span>
+                    </div>
+                    <div class="about__stat">
+                        <span class="about__stat-number" data-count="150" data-suffix="+">50+</span>
+                        <span class="about__stat-label">Incidents Solved</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stack-grid stagger">
+                <div class="stack-card">
+                    <h3 class="stack-card__title">Cloud</h3>
+                    <ul class="stack-card__list">
+                        <li>Azure</li>
+                        <li>AWS</li>
+                    </ul>
+                </div>
+                <div class="stack-card">
+                    <h3 class="stack-card__title">Data Platform</h3>
+                    <ul class="stack-card__list">
+                        <li>Databricks</li>
+                    </ul>
+                </div>
+                <div class="stack-card">
+                    <h3 class="stack-card__title">Data Processing</h3>
+                    <ul class="stack-card__list">
+                        <li>Apache Spark</li>
+                        <li>Pandas</li>
+                    </ul>
+                </div>
+                <div class="stack-card">
+                    <h3 class="stack-card__title">Storage</h3>
+                    <ul class="stack-card__list">
+                        <li>Delta Lake</li>
+                        <li>Postgres</li>
+                    </ul>
+                </div>
+                <div class="stack-card">
+                    <h3 class="stack-card__title">Backend</h3>
+                    <ul class="stack-card__list">
+                        <li>Python</li>
+                        <li>FastAPI</li>
+                    </ul>
+                </div>
+                <div class="stack-card">
+                    <h3 class="stack-card__title">Frontend</h3>
+                    <ul class="stack-card__list">
+                        <li>React</li>
+                        <li>TypeScript</li>
+                    </ul>
+                </div>
+                <div class="stack-card">
+                    <h3 class="stack-card__title">DevOps</h3>
+                    <ul class="stack-card__list">
+                        <li>Docker</li>
+                        <li>Nginx</li>
+                        <li>GitLab CI/CD</li>
+                        <li>Databricks Asset Bundles</li>
+                    </ul>
+                </div>
+                <div class="stack-card">
+                    <h3 class="stack-card__title">AI</h3>
+                    <ul class="stack-card__list">
+                        <li>GitHub Copilot</li>
+                        <li>Claude Code</li>
+                    </ul>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- ===================== LATEST ARTICLES ===================== -->
+    <section id="latest" class="section section--alt">
+        <div class="container">
+            <h2 class="section__title reveal">Articles</h2>
+            <p class="section__subtitle reveal">Each article explores a real engineering decision, the trade-offs behind it, and the lessons learned.</p>
+
+            <div class="article-grid">
+                <a href="articles/empty-states-are-a-feature/" class="article-card reveal">
+                    <span class="article-card__tag">Frontend &amp; UX</span>
+                    <span class="article-card__date">Jul 15, 2026 · 7 min read</span>
+                    <h4 class="article-card__title">Empty States Are a Feature: UX Decisions From Building an ERP Frontend</h4>
+                    <p class="article-card__desc">Empty, loading, and error states designed as deliberately as the happy path — patterns with React and TanStack Query that make a business app feel trustworthy.</p>
+                    <span class="article-card__read">Read →</span>
+                </a>
+                <a href="articles/excel-to-databricks-ingestion/" class="article-card reveal">
+                    <span class="article-card__tag">Data Engineering</span>
+                    <span class="article-card__date">Jun 30, 2026 · 7 min read</span>
+                    <h4 class="article-card__title">Excel to Databricks: A Metadata-Driven Ingestion Framework</h4>
+                    <p class="article-card__desc">Filling a Databricks platform gap: building exact-once Excel ingestion with configurable load strategies.</p>
+                    <span class="article-card__read">Read →</span>
+                </a>
+                <a href="articles/alembic-migrations/" class="article-card reveal">
+                    <span class="article-card__tag">Backend Engineering</span>
+                    <span class="article-card__date">Jul 2026 · 6 min read</span>
+                    <h4 class="article-card__title">Database Migrations as Code: Alembic for Reproducible Schema Changes</h4>
+                    <p class="article-card__desc">What migrations are, why they belong in version control, and the Alembic commands that run schema changes identically across all environments.</p>
+                    <span class="article-card__read">Read →</span>
+                </a>
+            </div>
+
+            <a href="blog/" class="section__link">See all articles →</a>
+        </div>
+    </section>
+
+    <!-- ===================== CONTACT ===================== -->
+    <section id="contact" class="section section--alt">
+        <div class="container">
+            <h2 class="section__title reveal">Contact</h2>
+            <p class="contact__intro">Open to new consulting opportunities, technical conversations, or knowledge sharing.</p>
+            <div class="contact__links">
+                <a href="https://www.linkedin.com/in/oseliocandido/" class="contact__link" target="_blank" rel="noopener noreferrer">
+                    <span class="contact__icon">in</span>
+                    <span>LinkedIn</span>
+                </a>
+            </div>
+        </div>
+    </section>
+
+    <script>
+    (function () {
+        function animateCount(el) {
+            const target = parseInt(el.dataset.count, 10);
+            const suffix = el.dataset.suffix || '';
+            const duration = 1200;
+            const steps = 40;
+            const interval = duration / steps;
+            let current = 0;
+            el.textContent = '0' + suffix;
+            const timer = setInterval(function () {
+                current += Math.ceil(target / steps);
+                if (current >= target) {
+                    current = target;
+                    clearInterval(timer);
+                }
+                el.textContent = current + suffix;
+            }, interval);
+        }
+
+        const observer = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (entry.isIntersecting) {
+                    entry.target.querySelectorAll('[data-count]').forEach(animateCount);
+                    observer.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.3 });
+
+        const statsBlock = document.querySelector('.about__meta');
+        if (statsBlock) observer.observe(statsBlock);
+
+        const barObserver = new IntersectionObserver(function (entries) {
+            entries.forEach(function (entry) {
+                if (entry.isIntersecting) {
+                    entry.target.querySelectorAll('.tech-bar__fill').forEach(function (fill) {
+                        fill.style.width = fill.dataset.width + '%';
+                    });
+                    barObserver.unobserve(entry.target);
+                }
+            });
+        }, { threshold: 0.3 });
+
+        const barsBlock = document.querySelector('.tech-bars');
+        if (barsBlock) barObserver.observe(barsBlock);
+
+        const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+        if (!prefersReducedMotion) {
+            const revealEls = document.querySelectorAll('.reveal');
+            const revealObserver = new IntersectionObserver(function (entries) {
+                entries.forEach(function (entry) {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.remove('reveal-hidden');
+                        revealObserver.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+
+            requestAnimationFrame(function () {
+                revealEls.forEach(function (el) {
+                    el.classList.add('reveal-hidden');
+                });
+                revealEls.forEach(function (el) {
+                    revealObserver.observe(el);
+                });
+            });
+
+            // Staggered groups: children cascade in when the block scrolls into view
+            const staggerEls = document.querySelectorAll('.stagger');
+            const staggerObserver = new IntersectionObserver(function (entries) {
+                entries.forEach(function (entry) {
+                    if (entry.isIntersecting) {
+                        entry.target.classList.remove('stagger-hidden');
+                        staggerObserver.unobserve(entry.target);
+                    }
+                });
+            }, { threshold: 0.15, rootMargin: '0px 0px -40px 0px' });
+
+            staggerEls.forEach(function (el) {
+                el.classList.add('stagger-hidden');
+                staggerObserver.observe(el);
+            });
+        }
+
+        const progressBar = document.getElementById('navProgress');
+        if (progressBar) {
+            function updateProgress() {
+                const scrollTop = window.scrollY;
+                const docHeight = document.documentElement.scrollHeight - window.innerHeight;
+                const pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+                progressBar.style.width = pct + '%';
+            }
+            window.addEventListener('scroll', updateProgress, { passive: true });
+            window.addEventListener('resize', updateProgress);
+            updateProgress();
+        }
+
+        const pipelineTrack = document.getElementById('pipelineTrack');
+        if (pipelineTrack) {
+            const stages = pipelineTrack.querySelectorAll('.pipeline__stage');
+            const connectors = pipelineTrack.querySelectorAll('.pipeline__connector');
+            const stageDelay = 950;
+            const holdDelay = 1200;
+            let current = 0;
+
+            /* Each pipeline loop plays one real engineering decision through
+               to publication — the stage the dots are on drives the status
+               line below, so the two widgets read as one workflow. */
+            const decisions = [
+                {
+                    num: '#127',
+                    title: 'Sizing Compute as Code',
+                    category: 'Cost Optimization',
+                    href: 'articles/reusable-job-clusters/'
+                },
+                {
+                    num: '#142',
+                    title: 'HR Analytics From Scratch, 6 Countries',
+                    category: 'Architecture',
+                    href: 'articles/medallion-architecture-multi-country/'
+                },
+                {
+                    num: '#171',
+                    title: 'Metadata-Driven Excel Ingestion',
+                    category: 'Data Engineering',
+                    href: 'articles/excel-to-databricks-ingestion/'
+                }
+            ];
+            /* One log line per stage — what actually happens at that step,
+               not just the stage name repeated. */
+            const logByStage = [
+                'Scoping problem — loaded 4 source systems',
+                'Validating — 0 data quality issues found',
+                'Transforming — evaluating alternatives',
+                'Testing — contract tests passed',
+                'Deploying — rolling out to production',
+                'Healthy — monitoring KPIs'
+            ];
+            const maxLogLines = 5;
+
+            const decisionNum = document.getElementById('decisionNum');
+            const decisionTitle = document.getElementById('decisionTitle');
+            const decisionCategory = document.getElementById('decisionCategory');
+            const decisionLink = document.getElementById('decisionLink');
+            const decisionCard = document.getElementById('decisionCard');
+            const decisionLog = document.getElementById('decisionLog');
+            let decisionIndex = 0;
+
+            function renderDecision() {
+                const d = decisions[decisionIndex];
+                if (decisionNum) decisionNum.textContent = d.num;
+                if (decisionTitle) decisionTitle.textContent = d.title;
+                if (decisionCategory) decisionCategory.textContent = d.category;
+                if (decisionLink) decisionLink.href = d.href;
+            }
+
+            function timestamp() {
+                return new Date().toLocaleTimeString('en-US', { hour12: false });
+            }
+
+            function logLine(text) {
+                if (!decisionLog) return;
+                const line = document.createElement('div');
+                line.className = 'decision-card__log-line';
+                line.innerHTML = '<span class="decision-card__log-time">' + timestamp() + '</span>' + text;
+                decisionLog.appendChild(line);
+                while (decisionLog.children.length > maxLogLines) {
+                    decisionLog.removeChild(decisionLog.firstChild);
+                }
+                decisionLog.scrollTop = decisionLog.scrollHeight;
+            }
+
+            function setStage(index) {
+                stages.forEach(function (stage, i) {
+                    stage.classList.toggle('is-done', i < index);
+                    stage.classList.toggle('is-active', i === index);
+                });
+                connectors.forEach(function (connector, i) {
+                    connector.classList.toggle('is-filled', i < index);
+                });
+                logLine(logByStage[index]);
+                if (decisionCard) decisionCard.classList.toggle('is-published', index === stages.length - 1);
+                if (decisionLink) decisionLink.hidden = index !== stages.length - 1;
+            }
+
+            function advance() {
+                current += 1;
+                if (current >= stages.length) {
+                    setTimeout(function () {
+                        current = 0;
+                        decisionIndex = (decisionIndex + 1) % decisions.length;
+                        renderDecision();
+                        if (decisionLog) decisionLog.innerHTML = '';
+                        setStage(current);
+                        setTimeout(advance, stageDelay);
+                    }, holdDelay);
+                    return;
+                }
+                setStage(current);
+                setTimeout(advance, stageDelay);
+            }
+
+            renderDecision();
+            setStage(current);
+            setTimeout(advance, stageDelay);
+        }
+    })();
+    </script>
+
+    <!-- ===================== FOOTER ===================== -->
+    <footer class="footer">
+        <div class="container">
+            <div class="footer__grid">
+                <div class="footer__brand">
+                    <span class="footer__logo">Oselio Candido</span>
+                    <p class="footer__desc">Engineering decisions that scale businesses — reliable data platforms, cloud architecture, and systems built to stay maintainable years after deployment.</p>
+                </div>
+                <nav class="footer__nav" aria-label="Footer">
+                    <a href="#about">About</a>
+                    <a href="blog/">Articles</a>
+                    <a href="#contact">Contact</a>
+                </nav>
+                <div class="footer__social">
+                    <a href="https://www.linkedin.com/in/oseliocandido/" class="footer__social-link" target="_blank" rel="noopener noreferrer">
+                        <span class="footer__social-icon">in</span>
+                        <span>LinkedIn</span>
+                    </a>
+                </div>
+            </div>
+            <div class="footer__bottom">
+                <p class="footer__copyright">© 2026 Oselio Candido</p>
+            </div>
+        </div>
+    </footer>
+
+</body>
+</html>

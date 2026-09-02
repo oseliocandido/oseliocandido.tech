@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Centralized Pipeline Observability in Databricks — Oselio Candido</title>
+    <meta name="description" content="Embedding an automated log writer into a shared Databricks write path — the schema, the fail-safe execution wrapper, Delta merge-aware row counts, cluster metadata capture, and the SQL queries it makes possible.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="stylesheet" href="../../css/components.css">
+    <link rel="stylesheet" href="../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../../index.html#about">About</a></li>
+                <li><a href="../../blog/">Articles</a></li>
+                <li><a href="../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">Observability</span>
+                <h1 class="article-page__title">Centralized Pipeline Observability in Databricks</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>May 21, 2026</span>
+                    <span>·</span>
+                    <span>8 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <p>
+                    Scattered driver logs and <code>print()</code> statements do not provide platform observability. When an unattended job fails hours after its cluster terminates, diagnosing the issue usually means hunting through individual task logs — assuming anything was printed at all.
+                </p>
+
+                <p>
+                    To build true platform observability, execution telemetry must be queryable, persistent, and impossible to skip. We solved this by embedding an automated log writer directly into the platform's shared DataFrame write path (<code>PipelineOrchestrator</code>).
+                </p>
+
+                <h2>Why enforce telemetry in the write path?</h2>
+
+                <p>
+                    Relying on developers to manually log execution details fails over time:
+                </p>
+
+                <ul>
+                    <li><strong>Documentation &amp; conventions.</strong> Opt-in conventions suffer from drift as teams grow.</li>
+                    <li><strong>Databricks Jobs UI.</strong> Good for point-in-time debugging, but lacks business context (domain, layer, target table) and can't be queried across runs.</li>
+                    <li><strong>Per-domain audit tables.</strong> Moves fragmentation up one level, making cross-platform queries tedious.</li>
+                </ul>
+
+                <p>
+                    <strong>Wrapping the write step.</strong> Every transformation notebook in the platform routes its output through a shared write helper. Instrumenting that single entry point ensures every write records telemetry automatically, requiring zero extra effort from pipeline authors.
+                </p>
+
+                <h2>Log table schema</h2>
+
+                <p>
+                    Each entry in the centralized log table (<code>PIPELINE_LOG_SCHEMA</code>) records a single step execution:
+                </p>
+
+                <pre><code class="language-python">from pyspark.sql.types import (
+    StructType, StructField, StringType, IntegerType,
+    TimestampType, DateType, MapType,
+)
+
+PIPELINE_LOG_SCHEMA = StructType([
+    # Business context
+    StructField("domain",          StringType(),  True),
+    StructField("corporate",       StringType(),  True),
+    StructField("layer",           StringType(),  True),
+
+    # Target location
+    StructField("target_catalog",  StringType(),  True),
+    StructField("target_schema",   StringType(),  True),
+    StructField("target_table",    StringType(),  True),
+
+    # Execution timing
+    StructField("event_date",      DateType(),    True),
+    StructField("start_timestamp", TimestampType(), True),
+    StructField("end_timestamp",   TimestampType(), True),
+
+    # Outcome & volume metrics
+    StructField("status",          StringType(),  True),   # "SUCCESS" | "FAILED"
+    StructField("error_message",   StringType(),  True),   # truncated to 2000 chars
+    StructField("rows",            IntegerType(), True),   # Delta history metric
+
+    # Identity & links
+    StructField("job_run_id",      StringType(),  True),
+    StructField("task_run_id",     StringType(),  True),
+    StructField("url_run_links",   MapType(StringType(), StringType()), True),
+    StructField("run_as",          StringType(),  True),
+
+    # Runtime environment
+    StructField("run_parameters",  MapType(StringType(), StringType()), True),
+    StructField("commit_hash",     StringType(),  True),
+    StructField("cluster_info",    MapType(StringType(), StringType()), True),
+])</code></pre>
+
+                <h2>Implementation details</h2>
+
+                <h3>1. Fail-safe execution wrapper</h3>
+
+                <p>
+                    The orchestrator executes the underlying Delta write inside a try/except/finally block:
+                </p>
+
+                <pre><code class="language-python">try:
+    _run_write(config)
+except Exception as exc:
+    status = ExecutionStatus.FAILED
+    exception = exc
+    error_message = str(exc)[:2000]
+else:
+    status = ExecutionStatus.SUCCESS
+    rows, _ = _get_delta_history_metrics(self._spark, full_table)
+finally:
+    end = datetime.now()
+    event = PipelineLogEvent(...)
+    self._writer.write_event(event)
+
+if status == ExecutionStatus.FAILED:
+    raise RuntimeError(f"Failed to process: {exception}") from exception</code></pre>
+
+                <ul>
+                    <li><strong>Guaranteed writes.</strong> Writing the telemetry event inside <code>finally</code> ensures failures leave an audit record even if the job crashes.</li>
+                    <li><strong>Exception re-raising.</strong> Re-raising the original exception preserves downstream job dependency chains rather than silently masking pipeline failures.</li>
+                </ul>
+
+                <p>
+                    Slicing <code>str(exc)</code> to 2000 characters means a deep PySpark/JVM stack trace can get cut before it reaches the actual root cause buried at the bottom. That's an acceptable trade here rather than a gap, because <code>error_message</code> isn't the only way back to the failure — <code>url_run_links</code> is captured on the same row, so a truncated message is a pointer to go investigate, not the last available copy of the trace. The full log is still one click away in the Jobs UI.
+                </p>
+
+                <h3>2. Delta merge-aware row counts</h3>
+
+                <p>
+                    Standard Delta write metrics report total output rows for <code>append</code> and <code>overwrite</code> operations, but omit row counts during <code>MERGE INTO</code> execution. Reading the latest commit from <code>DESCRIBE HISTORY</code> accounts for both insert and update operations:
+                </p>
+
+                <pre><code class="language-python">def _get_delta_history_metrics(spark, full_table_name: str) -> tuple[Optional[int], Dict[str, str]]:
+    history = spark.sql(f"DESCRIBE HISTORY {full_table_name} LIMIT 1").first()
+    metrics = history.operationMetrics or {}
+
+    if "numOutputRows" in metrics:
+        # append / overwrite
+        rows = int(metrics["numOutputRows"])
+    elif "numTargetRowsInserted" in metrics:
+        # merge operations
+        inserted = int(metrics.get("numTargetRowsInserted", 0))
+        updated = int(metrics.get("numTargetRowsUpdated", 0))
+        rows = inserted + updated
+    else:
+        rows = None
+
+    return rows, metrics</code></pre>
+
+                <h3>3. Capturing context &amp; run links</h3>
+
+                <p>
+                    Execution parameters are harvested from Databricks widgets. To prevent log metadata extraction from breaking pipelines, widget parsing defaults gracefully when parameters are absent:
+                </p>
+
+                <pre><code class="language-python">def _get_widget_value(dbutils, widget_name: str, fallback: Optional[str] = None) -> Optional[str]:
+    try:
+        val = dbutils.widgets.get(widget_name)
+        return val if val else fallback
+    except Exception:
+        return fallback
+
+def _extract_org_id(host: Optional[str]) -> Optional[str]:
+    if not host:
+        return None
+    match = re.search(r"adb-(\d+)", host)
+    return match.group(1) if match else None
+
+def _build_job_run_url(host: Optional[str], job_run_id: Optional[str], dbutils) -> Optional[str]:
+    if not host or job_run_id is None:
+        return None
+    org_id = _extract_org_id(host)
+    job_id = _get_job_id(dbutils)
+
+    if not org_id or not job_id:
+        return None
+
+    return f"https://{host}/jobs/{job_id}/runs/{job_run_id}?o={org_id}"</code></pre>
+
+                <h3>4. Cluster metadata capture</h3>
+
+                <p>
+                    Job performance often depends on hardware configuration. The log package queries the Databricks Clusters REST API (<code>/api/2.0/clusters/get</code>) to capture driver/executor node types, runtime versions, and cluster capacity:
+                </p>
+
+                <pre><code class="language-python">def fetch_cluster_info(dbutils, spark) -> Optional[ClusterInfo]:
+    try:
+        ctx = dbutils.notebook.entry_point.getDbutils().notebook().getContext()
+        cluster_id = ctx.clusterId().get()
+        token = ctx.apiToken().get()
+    except Exception:
+        return None
+
+    host = spark.conf.get("spark.databricks.workspaceUrl", "") or None
+    if not host or not cluster_id:
+        return None
+
+    try:
+        resp = requests.get(
+            f"https://{host}/api/2.0/clusters/get",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"cluster_id": cluster_id},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return ClusterInfo.from_api_response(resp.json())
+    except requests.RequestException:
+        return None</code></pre>
+
+                <h3>5. Fail-open telemetry writes</h3>
+
+                <p>
+                    Logging logic must never crash the primary data workload. If appending to the centralized log table fails, the exception is caught and logged to console output:
+                </p>
+
+                <pre><code class="language-python">def write_event(self, event: PipelineLogEvent) -> None:
+    try:
+        row = event.to_row()
+        df = self._spark.createDataFrame([Row(**row)], schema=PIPELINE_LOG_SCHEMA)
+        df.write.mode("append").saveAsTable(self._full_table_name)
+    except Exception as e:
+        print(f"[Telemetry] Failed to write log event: {e}")</code></pre>
+
+                <h2>Querying platform observability</h2>
+
+                <p>
+                    Once every write records structured telemetry, SQL can answer cross-cutting operational questions.
+                </p>
+
+                <h3>Detecting duration drift</h3>
+
+                <p>
+                    Identify tables with escalating runtime trends over time:
+                </p>
+
+                <pre><code class="language-sql">SELECT
+    target_table,
+    event_date,
+    AVG(unix_timestamp(end_timestamp) - unix_timestamp(start_timestamp)) AS avg_duration_seconds
+FROM log_process
+GROUP BY target_table, event_date
+ORDER BY target_table, event_date;</code></pre>
+
+                <h3>Isolating volume outliers</h3>
+
+                <p>
+                    Find successful runs where processed row counts exceed 3 standard deviations from historical averages:
+                </p>
+
+                <pre><code class="language-sql">SELECT target_table, event_date, rows
+FROM log_process
+WHERE target_table = 'fact_orders'
+  AND status = 'SUCCESS'
+  AND rows > (
+      SELECT AVG(rows) + 3 * STDDEV(rows)
+      FROM log_process
+      WHERE target_table = 'fact_orders' AND status = 'SUCCESS'
+  );</code></pre>
+
+                <h3>Investigating failed tasks with direct links</h3>
+
+                <p>
+                    Extract failure error messages alongside direct links to the relevant Databricks task execution UI:
+                </p>
+
+                <pre><code class="language-sql">SELECT
+    domain,
+    layer,
+    target_table,
+    error_message,
+    url_run_links['url_task_run_id'] AS failed_run_url
+FROM log_process
+WHERE status = 'FAILED'
+  AND event_date >= date_sub(current_date(), 7)
+ORDER BY start_timestamp DESC;</code></pre>
+
+                <h2>Trade-offs worth naming</h2>
+
+                <p>
+                    None of these showed up as incidents on the infrastructure this ran on — a handful of notebooks, not a large fleet of concurrent tasks — but they're worth naming as the design's actual limits rather than pretending the approach has none.
+                </p>
+
+                <h3>Synchronous REST calls on the hot path</h3>
+
+                <p>
+                    <code>fetch_cluster_info</code> calls <code>https://{host}/api/2.0/clusters/get</code> synchronously, via <code>requests.get</code>, on every tracked write. That's an outbound HTTP call to the Databricks control plane sitting on the critical path of a data write, and at a large enough scale — dozens of concurrent tasks hammering the same API — it's a plausible source of added latency or <code>429 Too Many Requests</code> throttling. It didn't surface here because the write volume never got close to that; it would be the first thing to revisit before pointing this at a much larger job fleet, most likely by caching cluster info once per cluster lifetime instead of refetching it per write.
+                </p>
+
+                <p>
+                    There's a second fragility in the same function: <code>ctx.apiToken()</code> reaches into an undocumented internal Java API. Hardened workspace configurations — Unity Catalog single-user clusters, restricted service principals — can return a null or blocked token for security reasons, which is exactly the kind of failure the try/except around it is built to absorb, but it's still a dependency on an API surface Databricks doesn't officially support.
+                </p>
+
+                <h3>What Databricks system tables already give you</h3>
+
+                <p>
+                    Databricks' own system tables — <code>system.lakeflow.jobs</code>, <code>system.compute.clusters</code>, <code>system.billing.usage</code> — already record job execution, cluster specs, and usage platform-wide, with no custom code or API calls involved. Where those are enabled, a chunk of what <code>cluster_info</code> and the run-link construction do here duplicates something Databricks now ships natively; they weren't available in this workspace, which is why the package builds that context itself. Where system tables are available, the custom package's value narrows to what they can't give you: business-level context like <code>target_table</code>, <code>rows</code>, and <code>domain</code>, joined against your own write semantics rather than Databricks' generic job metadata.
+                </p>
+
+                <h2>Conclusion</h2>
+
+                <p>
+                    Centralizing pipeline telemetry within the DataFrame write layer converts scattered log outputs into an operational dataset. By capturing target schemas, commit hashes, cluster specs, and execution metrics consistently across all runs, debugging shifts from reading unstructured driver logs to executing simple SQL queries.
+                </p>
+
+                <p>
+                    Because it's one well-typed table instead of scattered print statements, it's also something dashboards and alerts can be built directly on top of — a chart of failure rate by domain and layer, or a scheduled query on <code>status = 'FAILED'</code> wired into a notification channel, without touching a single notebook.
+                </p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

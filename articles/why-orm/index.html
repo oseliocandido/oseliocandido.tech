@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Why Use an ORM (and What It Costs) — Oselio Candido</title>
+    <meta name="description" content="Identity maps, unit-of-work, and the mapper layer that keeps domain entities free of SQLAlchemy — plus where the ORM ends and raw query services begin.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../css/style.css">
+    <link rel="stylesheet" href="../../css/components.css">
+    <link rel="stylesheet" href="../../css/article.css">
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../index.html">Home</a></li>
+                <li><a href="../../index.html#about">About</a></li>
+                <li><a href="../../blog/">Articles</a></li>
+                <li><a href="../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Article -->
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">Backend Engineering</span>
+                <h1 class="article-page__title">Why Use an ORM (and What It Costs)</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Jul 2026</span>
+                    <span>·</span>
+                    <span>6 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <h2>The problem</h2>
+                <p>SQL in f-strings works — right up until the third join, the first injection scare, and the tenth file where the same table name is spelled by hand. Hand-rolled query code has no single place that knows the shape of a row, so a renamed column becomes a repo-wide grep with no compiler to catch what got missed. Multi-step writes — update a product, insert a stock movement, both or neither — get choreographed by hand with commits and rollbacks scattered through the call stack, and it's easy to leave one path uncommitted or double-committed. Two parts of the same use case can load the same row twice and silently hold two diverging copies of the truth. None of this is exotic; it's the ordinary failure mode of persistence code that grows without a disciplined boundary between objects and rows.</p>
+
+                <h2>What is an ORM</h2>
+                <p>An object-relational mapper translates between rows in a relational database and objects in application code, and — in a mature implementation like SQLAlchemy — adds two mechanisms that matter more than the translation itself. The first is a <strong>unit of work</strong>: a session that records every object loaded and every change made, then flushes them as one coordinated set of statements inside one transaction, so "save this product" means one thing in one place instead of a hand-choreographed sequence of commits. The second is an <strong>identity map</strong>: within a session, one row equals one object, so loading the same record twice returns the same instance rather than two independent copies that can drift apart. Add to that the unglamorous defaults — parameters are always bound, so injection isn't something you have to remember to prevent — and a dialect layer that lets the same mapped code run against different database engines, within limits.</p>
+                <p>None of that is free. Touch a lazily-loaded relationship inside a loop and the N+1 problem writes itself without a single query appearing in the code that triggered it — the ORM makes queries invisible, which is exactly the danger. When domain entities <em>are</em> the ORM models, business logic starts bending to fit whatever is convenient to persist, and foreign-key layout starts dictating business rules instead of the other way around. And hydrating a full object graph just to render a list screen is work nobody asked for — a table of a few hundred rows doesn't need a few hundred fully-loaded aggregates with their invariants and event buffers attached.</p>
+
+                <h2>The alternatives</h2>
+                <p>Three real options exist once the failure mode above is visible. Keep writing raw SQL by hand and rely on discipline and code review to catch drift between the schema and every hand-assembled dict — this scales for a while and then doesn't, because there's no single seam where a schema change forces every caller to be checked. Adopt an ORM and let domain entities be the mapped models directly — fastest to build, but it trades away the independence of business rules from the persistence schema, and it's the path that produces the "table-shaped domain" problem. Or adopt an ORM for what it's genuinely good at — transactional writes, identity-consistent object graphs, bound parameters — while deliberately keeping it out of two places it tends to creep into: the domain model itself, and read paths that don't need a full object graph.</p>
+                <p>A fourth option, skipping an ORM entirely in favor of a lightweight query builder, was also worth naming and rejecting: it avoids the mapping ceremony but gives up the unit-of-work and identity-map guarantees that are the actual reason multi-step writes stay correct under concurrent access. That trade wasn't worth it for the write paths that matter most.</p>
+
+                <h2>The decision</h2>
+                <p>The ORM was adopted, but bounded by two seams rather than left to spread everywhere it technically could reach.</p>
+
+                <h3>Domain entities stay free of the ORM</h3>
+                <p>Business aggregates are plain objects with their own construction and mutation methods and their own invariants — no mapped columns, no relationships, no import of the ORM at all. A separate, explicit translation layer converts between the mapped row representation and the domain object in both directions. It's boilerplate — adding a field means touching the entity, the mapped model, and the translator — but what it buys is real: the domain layer is testable with zero database, business rules can't silently depend on lazy-loading behavior, and the persistence shape is free to diverge from the domain shape when it needs to. That translation layer is the seam where the two worlds meet, and it's the direct answer to the table-shaped-domain trap.</p>
+
+                <blockquote>An ORM's real value is the unit of work and the identity map, not "not writing SQL" — treat it as a persistence tool with two useful guarantees, not as an architecture.</blockquote>
+
+                <h3>The unit of work owns the transaction</h3>
+                <p>Application logic never scatters commits through its own steps. It opens a unit of work, performs every step of the use case inside it, and a single context manager commits cleanly on success or rolls back on any exception — so "both writes or neither" is enforced structurally instead of by convention. Side effects that shouldn't fire on a rolled-back transaction — notifications, downstream events — are dispatched only after that commit succeeds, never interleaved with it.</p>
+
+                <h3>Reads go around the ORM</h3>
+                <p>List and reporting screens don't hydrate full aggregates. A separate read path selects exactly the columns a screen needs and returns lightweight read models directly, bypassing the mapped domain objects entirely — a pattern close to CQRS without the full machinery. Writes go through the aggregate, the translator, and the unit of work because that's where invariants live; reads skip all of it because nobody needs a fully-loaded object graph, complete with event buffers, just to render a table. This split is also the practical answer to N+1: the read path writes its join once, explicitly, instead of letting lazy loading discover it row by row and turn a page load into hundreds of queries.</p>
+
+                <h2>The outcome</h2>
+                <p>The result is an ORM used for exactly what it's good at — transactional writes coordinated through a unit of work, identity-consistent object graphs, bound parameters by default — and deliberately kept out of the two places it tends to cause the most damage: the domain model, which stays independent of the persistence schema and testable without a database, and read paths, which stay cheap because they're never forced to hydrate objects they don't need. The boilerplate cost of the translation layer is real and paid on every schema change, but it buys a domain layer that hasn't had to bend its rules to fit a table layout, and a set of write paths where "both or neither" has never once needed to be re-verified by hand.</p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>
