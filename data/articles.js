@@ -1,6 +1,6 @@
 /* Single source of truth for the article index.
    Loaded as a plain script (not fetch), but pages now use clean URLs
-   (articles/<slug>/) so viewing the site needs a local server, not file://
+   (blog/articles/<slug>/) so viewing the site needs a local server, not file://
    (e.g. `python -m http.server` from website/).
    status: "published" | "in-progress" | "planned"
    discipline: one of DISCIPLINES below. tags: free-form, lowercase, kebab-case.

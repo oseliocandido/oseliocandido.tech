@@ -12,7 +12,7 @@ from pathlib import Path
 
 WORDS_PER_MINUTE = 200
 
-ARTICLES_DIR = Path(__file__).resolve().parent.parent / "articles"
+ARTICLES_DIR = Path(__file__).resolve().parent.parent / "blog" / "articles"
 ARTICLES_JS = Path(__file__).resolve().parent.parent / "data" / "articles.js"
 
 BODY_RE = re.compile(r'<article class="article-page__body">(.*?)</article>', re.S)

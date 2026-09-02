@@ -57,7 +57,7 @@ def build_sitemap(articles: list[dict]) -> str:
     ]
     for article in articles:
         urls.append({
-            "loc": f"{SITE_URL}/articles/{article['slug']}/",
+            "loc": f"{SITE_URL}/blog/articles/{article['slug']}/",
             "lastmod": article["lastmod"] or today,
         })
 

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sizing Compute as Code for Databricks — Oselio Candido</title>
+    <meta name="description" content="Why a shared all-purpose cluster was replaced with three sized, ephemeral job-cluster presets — the sizing rationale and the spot-with-fallback tradeoff.">
+    <link rel="canonical" href="https://oseliocandido.tech/blog/articles/reusable-job-clusters/">
+    <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Oselio Candido">
+    <meta property="og:title" content="Sizing Compute as Code for Databricks — Oselio Candido">
+    <meta property="og:description" content="Why a shared all-purpose cluster was replaced with three sized, ephemeral job-cluster presets — the sizing rationale and the spot-with-fallback tradeoff.">
+    <meta property="og:url" content="https://oseliocandido.tech/blog/articles/reusable-job-clusters/">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Sizing Compute as Code for Databricks — Oselio Candido">
+    <meta name="twitter:description" content="Why a shared all-purpose cluster was replaced with three sized, ephemeral job-cluster presets — the sizing rationale and the spot-with-fallback tradeoff.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../../css/style.css">
+    <link rel="stylesheet" href="../../../css/components.css">
+    <link rel="stylesheet" href="../../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../../index.html">Home</a></li>
+                <li><a href="../../../index.html#about">About</a></li>
+                <li><a href="../../../blog/">Articles</a></li>
+                <li><a href="../../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">Performance</span>
+                <h1 class="article-page__title">Sizing Compute as Code: Reusable Job Clusters for Databricks Pipelines</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Jan 27, 2026</span>
+                    <span>·</span>
+                    <span>11 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <h2>The Problem</h2>
+
+                <p>
+                    Every job task in a family of daily ingestion pipelines pointed at the same line: <code>existing_cluster_id: ${var.cluster_id}</code>. One cluster, shared across every task in every job, staying warm whether or not anything was actually running on it. If that cluster was unhealthy, resizing, or mid-restart from someone else's workload, every job that depended on it inherited the problem. There was no way to reason about compute cost or reliability per job because compute wasn't scoped to the job at all — it was scoped to whatever happened to be sharing that one cluster at that moment.
+                </p>
+
+                <p>
+                    That coupling showed up in two distinct ways. On the reliability side, a slow or stuck task on one job could hold the shared cluster in a state that delayed or destabilized an unrelated job's run. On the cost side, the cluster's size was a single compromise value — big enough for the heaviest workload that ever touched it, which meant every lighter job was paying for capacity it didn't need, and nothing about the cluster's shape was recorded anywhere as a deliberate choice for any particular workload.
+                </p>
+
+                <div class="flow-diagram">
+                    <div class="flow-diagram__node">Job run triggered</div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">job_cluster_key: medium_cluster</div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">Preset resolved<small>from a Databricks Asset Bundle complex variable</small></div>
+                    <div class="flow-diagram__branch">
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">small_cluster</span>Standard_D4ds_v5<small>1-2 workers</small></div>
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">medium_cluster</span>Standard_D16ds_v5<small>2-5 workers</small></div>
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">large_cluster</span>Standard_E48ds_v5<small>1-3 workers, memory-optimised</small></div>
+                    </div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">Ephemeral cluster provisioned<small>spot-with-fallback</small></div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">All job tasks run on this cluster</div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">Cluster torn down at job end</div>
+                </div>
+
+                <h2>What Job Clusters Are, and Why They're a Different Model</h2>
+
+                <p>
+                    Databricks distinguishes between two ways a job task can get compute. <code>existing_cluster_id</code> references a cluster that already exists somewhere in the workspace — an all-purpose cluster someone stood up and is keeping alive, that a job just happens to attach to. <code>job_cluster_key</code> references a cluster defined inside the job itself, in a <code>job_clusters</code> block, that Databricks creates fresh when the job run starts and tears down when the run finishes. Every task in the job can reference the same <code>job_cluster_key</code>, so Databricks provisions one cluster for the whole job run and schedules all of that job's tasks onto it — it isn't one cluster per task, it's one ephemeral cluster shared across a single job's own task graph and nothing else:
+                </p>
+
+<pre><code class="language-yaml">tasks:
+  - task_key: core_to_stage
+    notebook_task:
+      notebook_path: ${workspace.file_path}/transformations/01_core_to_stage
+      source: WORKSPACE
+    job_cluster_key: medium_cluster
+    max_retries: 2
+    min_retry_interval_millis: 300000
+  # ... additional tasks, same job_cluster_key ...
+job_clusters:
+  - job_cluster_key: medium_cluster
+    new_cluster: ${var.medium_cluster}</code></pre>
+
+                <p>
+                    That <code>${var.medium_cluster}</code> reference is where the reusability comes from. Databricks Asset Bundles support a <code>type: complex</code> variable — effectively a whole object literal that any job can reference and get back verbatim. That's the mechanism that turns "one cluster spec per job" into "a small library of named presets every job pulls from":
+                </p>
+
+<pre><code class="language-yaml">variables:
+
+  # SMALL — Standard_D4ds_v5 | 1-2 workers
+  # Suited for: lightweight ETL, dev/test runs, low-volume incremental loads
+  small_cluster:
+    description: "Small jobs cluster — Standard_D4ds_v5, 1-2 workers"
+    type: complex
+    default:
+      cluster_name: ""
+      spark_version: "15.4.x-scala2.12"
+      node_type_id: "Standard_D4ds_v5"
+      enable_elastic_disk: true
+      policy_id: "{cluster-policy-id}"
+      data_security_mode: "USER_ISOLATION"
+      runtime_engine: "STANDARD"
+      autoscale:
+        min_workers: 1
+        max_workers: 2
+      azure_attributes:
+        first_on_demand: 1
+        availability: "SPOT_WITH_FALLBACK_AZURE"
+        spot_bid_max_price: -1
+      spark_env_vars: &default_spark_env_vars
+        PLATFORM_ENVIRONMENT: "{env}"
+        PLATFORM_TENANT_ID: "{tenant-id}"
+        PACKAGE_REGISTRY_SECRET: "{{secrets/keyvault/package-registry-secret}}"
+        PIP_PROXY: "{proxy-url}"
+        PLATFORM_PYTHON_PACKAGE_PROXY: "--proxy {proxy-url}"
+        PLATFORM_PYTHON_PACKAGE_URL: "https://token:{package-registry-secret}@{package-index-host}/simple/"
+
+  # MEDIUM — Standard_D16ds_v5 | 2-5 workers
+  # Suited for: standard daily/monthly ETL, most production workloads
+  medium_cluster:
+    description: "Medium jobs cluster — Standard_D16ds_v5, 2-5 workers"
+    type: complex
+    default:
+      cluster_name: ""
+      spark_version: "15.4.x-scala2.12"
+      node_type_id: "Standard_D16ds_v5"
+      enable_elastic_disk: true
+      policy_id: "{cluster-policy-id}"
+      data_security_mode: "USER_ISOLATION"
+      runtime_engine: "STANDARD"
+      autoscale:
+        min_workers: 2
+        max_workers: 5
+      azure_attributes:
+        first_on_demand: 1
+        availability: "SPOT_WITH_FALLBACK_AZURE"
+        spot_bid_max_price: -1
+      spark_env_vars: *default_spark_env_vars
+
+  # LARGE — Standard_E48ds_v5 (memory-optimised) | 1-3 workers
+  # Suited for: heavy reprocessing, full-history loads, memory-intensive joins
+  # Driver node matches worker type to avoid driver bottleneck.
+  large_cluster:
+    description: "Large jobs cluster — Standard_E48ds_v5 (memory-optimised), 1-3 workers"
+    type: complex
+    default:
+      cluster_name: ""
+      spark_version: "15.4.x-scala2.12"
+      node_type_id: "Standard_E48ds_v5"
+      driver_node_type_id: "Standard_E48ds_v5"
+      enable_elastic_disk: true
+      policy_id: "{cluster-policy-id}"
+      data_security_mode: "USER_ISOLATION"
+      runtime_engine: "STANDARD"
+      autoscale:
+        min_workers: 1
+        max_workers: 3
+      azure_attributes:
+        first_on_demand: 1
+        availability: "SPOT_WITH_FALLBACK_AZURE"
+        spot_bid_max_price: -1
+      spark_env_vars: *default_spark_env_vars</code></pre>
+
+                <p>
+                    Two mechanical details matter here. First, complex variables replace the whole object — there's no partial merge in DAB. If a job needs a one-off tweak to autoscale bounds, the only option is to override the entire block in that job's own <code>new_cluster</code> definition rather than the preset, which is a deliberate constraint: it keeps three presets from drifting into a dozen slightly-different variants nobody can reason about. Second, the <code>spark_env_vars</code> map — a dozen-plus keys covering environment identity, telemetry endpoints, and package proxy configuration — is defined exactly once, in <code>small_cluster</code>, using a YAML anchor (<code>&default_spark_env_vars</code>) and aliased (<code>*default_spark_env_vars</code>) into the other two presets. YAML anchor scope is document-wide, so a cross-mapping reference like this works cleanly, and it means updating a proxy URL or a tenant ID is a one-line change instead of three.
+                </p>
+
+                <h2>The Alternatives</h2>
+
+                <p>
+                    There were a few ways to fix the shared-cluster problem, and each had a real cost attached.
+                </p>
+
+                <p>
+                    <strong>Keep the shared all-purpose cluster and just size it bigger.</strong> The simplest fix, and the one that requires no restructuring — just resize the existing cluster to cover the heaviest workload permanently. It solves nothing about reliability coupling, and it means every lighter job pays the cost of the heaviest one, all the time, whether or not the heavy job is even running that day.
+                </p>
+
+                <p>
+                    <strong>Give every job its own hand-tuned cluster spec.</strong> Full control per job, and no shared-cluster reliability coupling. But with dozens of job definitions, that means dozens of independently-maintained node types, autoscale bounds, and environment variable blocks — any shared config change, like rotating a proxy URL, has to be applied everywhere by hand, and nothing stops two nearly-identical jobs from drifting into subtly different, undocumented cluster shapes over time.
+                </p>
+
+                <p>
+                    <strong>Define a small number of sized presets that jobs reference by name.</strong> A middle ground: jobs get dedicated, ephemeral compute scoped to their own run, but the number of cluster shapes to reason about and maintain stays fixed and small. The cost is that a preset is a compromise for any job that doesn't fit neatly into small, medium, or large — but that's a bounded, visible trade-off rather than an unbounded one.
+                </p>
+
+                <h2>The Decision</h2>
+
+                <p>
+                    The third option won, on the basis that most workloads in this pipeline family cluster into a small number of genuinely distinct shapes, and a fixed set of presets makes that visible instead of implicit. Three tiers were defined, each mapped to a workload profile rather than picked arbitrarily:
+                </p>
+
+                <ul>
+                    <li><strong>Small — <code>Standard_D4ds_v5</code>, 1-2 workers.</strong> General-purpose compute, sized for lightweight ETL and low-volume incremental loads where the bottleneck is task orchestration overhead, not CPU or shuffle.</li>
+                    <li><strong>Medium — <code>Standard_D16ds_v5</code>, 2-5 workers.</strong> The workhorse tier, used by the shuffle-heavy transformation stages in the daily ingestion pipelines. <code>Standard_D16ds_v5</code> is a general-purpose node with enough cores and memory per executor to handle those joins without falling over on spill, while the 2-5 autoscale range absorbs the difference between a normal daily volume and a heavier catch-up run without needing a separate cluster definition.</li>
+                    <li><strong>Large — <code>Standard_E48ds_v5</code>, 1-3 workers, memory-optimised.</strong> Reserved for full-history reprocessing and memory-intensive joins where the constraint is RAM per executor, not worker count — hence the narrower 1-3 autoscale range on a much larger node. The driver node type is deliberately set to match the worker type (<code>driver_node_type_id: Standard_E48ds_v5</code>) so the driver doesn't become the bottleneck when collecting or broadcasting large intermediate results, which is a real risk on memory-heavy jobs if the driver is left at a smaller default size.</li>
+                </ul>
+
+                <p>
+                    Matching a preset to a workload is a one-time sizing decision, not a per-run tuning exercise — and that's the point of having three fixed options instead of letting every job author pick arbitrary node types and autoscale bounds. A new job doesn't require a compute-sizing conversation; it requires picking small, medium, or large based on which of the three descriptions its workload resembles.
+                </p>
+
+                <h3>Spot-with-Fallback: Cost Without a Reliability Trade</h3>
+
+                <p>
+                    All three presets set <code>availability: "SPOT_WITH_FALLBACK_AZURE"</code> with <code>spot_bid_max_price: -1</code> and <code>first_on_demand: 1</code>. This is Azure's spot-with-fallback behavior: the driver node (covered by <code>first_on_demand: 1</code>) always runs on-demand so the job doesn't lose its control node to preemption, worker nodes are requested as spot capacity at whatever the current market price is (<code>-1</code> means no bid ceiling — take spot at market rate rather than risk being under-bid and starved of capacity), and if spot capacity isn't available at cluster launch or a spot worker gets reclaimed mid-run, Databricks transparently provisions on-demand capacity in its place instead of leaving the job stuck waiting or failing outright.
+                </p>
+
+                <p>
+                    That combination is what makes spot viable for a production daily pipeline rather than just a dev/test cost trick: the downside of spot — the possibility of not getting capacity, or losing it mid-run — is capped by an automatic fallback, so the only thing actually at risk is paying on-demand price on the rare occasion spot isn't available, not job failure or an indefinitely queued run.
+                </p>
+
+                <blockquote>
+                    Spot pricing is a discount you get for accepting that the underlying capacity can be reclaimed. Spot-with-fallback is what turns that from a risk you have to design around into a cost optimization you get for free — the failure mode becomes "slightly more expensive," never "the job didn't run."
+                </blockquote>
+
+                <h3>Making Notebook Initialization Portable</h3>
+
+                <p>
+                    Sizing and cost were only half the change. The other half was the notebook every job runs first to install the platform's Python packages before any transformation logic executes. Before this work, the proxy URL used for pip installs was a literal hardcoded string sitting in the notebook itself, alongside a secret lookup that always went to the workspace secret scope regardless of whether an environment variable had already been injected by the job cluster's <code>spark_env_vars</code>:
+                </p>
+
+<pre><code class="language-python"># before
+INDEX_URL = os.environ['PLATFORM_PYTHON_PACKAGE_URL'].format(
+    package_secret=dbutils.secrets.get(scope='keyvault', key='package-registry-secret')
+)
+PROXY_URL = "http://{hardcoded-proxy-host}:8080"
+
+%pip install --proxy $PROXY_URL --index-url $INDEX_URL platform-utils</code></pre>
+
+                <p>
+                    That hardcoded proxy string is exactly the kind of thing the new cluster presets were designed to eliminate: with <code>PIP_PROXY</code> and <code>PLATFORM_PYTHON_PACKAGE_PROXY</code> now defined once in the shared <code>spark_env_vars</code> anchor and injected into every cluster the notebook could possibly run on, the notebook itself no longer needs to know what environment it's in — it just reads the variable the cluster already set:
+                </p>
+
+<pre><code class="language-python"># after
+# Proxy URL for pip installations
+PIP_PROXY = os.environ['PIP_PROXY']
+
+# Secret for package registry access
+PACKAGE_REGISTRY_SECRET = os.environ['PACKAGE_REGISTRY_SECRET'] or dbutils.secrets.get(scope='keyvault', key='package-registry-secret')
+if PACKAGE_REGISTRY_SECRET is None:
+    raise Exception("PACKAGE_REGISTRY_SECRET is not set")
+
+INDEX_URL = os.environ['PLATFORM_PYTHON_PACKAGE_URL'].format(package_secret=PACKAGE_REGISTRY_SECRET)
+
+# Proxy argument for pip package installations
+PLATFORM_PYTHON_PACKAGE_PROXY = os.environ['PLATFORM_PYTHON_PACKAGE_PROXY']</code></pre>
+
+                <p>
+                    The secret lookup keeps the secret-scope call as a fallback rather than dropping it — if the environment variable isn't set for some reason, the notebook still resolves the secret the old way instead of failing outright, and an explicit exception fires only if both paths come back empty. That's a deliberately conservative migration: prefer the environment-variable path the new cluster presets provide, but don't strand a job that runs on compute defined before this change rolled out everywhere. The rest of the notebook was also broken into named, labeled steps instead of one long unlabeled block — not a functional change to what installs, but it matters for the portability goal: when the notebook runs against a new environment for the first time and something in the install chain fails, it's now visible which named step failed instead of a wall of output with no obvious boundary between fetching the index and installing the requirements.
+                </p>
+
+                <p>
+                    The migration itself was scoped deliberately narrow rather than attempted everywhere at once. Only the highest-volume, most cost-sensitive job family moved to job clusters in this change; other job families kept using the pre-existing shared-cluster model for the time being, with that split recorded explicitly rather than left to be discovered later. Migrating every job family in one pass would have meant a much larger blast radius for a change whose main value — decoupling reliability and making cost visible — was already captured by moving the biggest workload first.
+                </p>
+
+                <h2>The Outcome</h2>
+
+                <p>
+                    Three daily pipeline definitions — spanning roughly two dozen notebook tasks between them — moved from a shared all-purpose cluster to ephemeral <code>medium_cluster</code> job clusters. Each job run now gets a cluster scoped to exactly that run, provisioned with spot-with-fallback pricing, and torn down when the tasks finish, instead of a shared cluster that stayed warm and billable independent of whether anything was using it. Bundle validation confirmed the cluster configurations resolved correctly and notebooks initialized cleanly against the new environment-variable-driven proxy setup before this reached production, catching any misconfiguration at deploy time rather than at the first job run.
+                </p>
+
+                <p>
+                    The bigger, less immediately visible result is structural: compute sizing became something reviewable in a diff instead of an ad-hoc decision made once and never revisited. Adding a new job now means picking one of three named presets rather than opening a conversation about node types and autoscale bounds, and a shared config change — a proxy URL, a tenant identifier — is a one-line edit to a single anchor instead of a hunt through every job's cluster block to make sure none of them drifted.
+                </p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

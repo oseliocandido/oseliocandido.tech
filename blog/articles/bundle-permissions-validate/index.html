@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Catching Missing Grants Before Deploy — Oselio Candido</title>
+    <meta name="description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, with bundle validate as a pre-deploy audit.">
+    <link rel="canonical" href="https://oseliocandido.tech/blog/articles/bundle-permissions-validate/">
+    <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Oselio Candido">
+    <meta property="og:title" content="Catching Missing Grants Before Deploy — Oselio Candido">
+    <meta property="og:description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, with bundle validate as a pre-deploy audit.">
+    <meta property="og:url" content="https://oseliocandido.tech/blog/articles/bundle-permissions-validate/">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Catching Missing Grants Before Deploy — Oselio Candido">
+    <meta name="twitter:description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, with bundle validate as a pre-deploy audit.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../../css/style.css">
+    <link rel="stylesheet" href="../../../css/components.css">
+    <link rel="stylesheet" href="../../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../../index.html">Home</a></li>
+                <li><a href="../../../index.html#about">About</a></li>
+                <li><a href="../../../blog/">Articles</a></li>
+                <li><a href="../../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">CI/CD</span>
+                <h1 class="article-page__title">Catching Missing Grants Before Deploy: The Databricks Asset Bundle Permissions Model</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Dec 12, 2025</span>
+                    <span>·</span>
+                    <span>8 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <div class="flow-diagram">
+                    <div class="flow-diagram__branch">
+                        <div class="flow-diagram__node">Top-level permissions block<small>databricks.yml — inherited by every job, pipeline, dashboard under resources/</small></div>
+                        <div class="flow-diagram__node">Job-level permissions override<small>e.g. daily_etl_job.yml — applies only to that single resource</small></div>
+                    </div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">databricks bundle validate</div>
+                    <div class="flow-diagram__branch">
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">warns on unresolved groups/vars</span>Caught pre-deploy<small>as permissions audit</small></div>
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">missed warning</span>Runtime access-denied incident</div>
+                    </div>
+                </div>
+
+                <h2>The Problem</h2>
+
+                <p>
+                    A reader group lost access to a job it needed to see. The mechanical fix was obvious: add the group to that job's <code>permissions:</code> block with <code>CAN_VIEW</code>. The first pass did exactly that. A reader group, scoped to the PRD satellite, needed <code>CAN_VIEW</code> on a daily ETL job, and the job already had a <code>permissions:</code> block templating a developer group by environment, so the reader group was appended to it:
+                </p>
+
+<pre><code class="language-yaml"># resources/jobs/.../daily_etl_job.yml
+      permissions:
+        - group_name: "OG_USER_PROJECT_CONTENT_${var.satellite_number}_${bundle.target}_DEVELOPER"
+          level: ${var.jobs_permission_level}
+        - group_name: OG_USER_PROJECT_CONTENT_042_PRD_READER
+          level: CAN_VIEW</code></pre>
+
+                <p>
+                    That entry is honest about what it is: a targeted, job-level patch, with the group hardcoded to the PRD satellite rather than templated through <code>${bundle.target}</code> the way the developer group above it is. It solved the immediate access problem for that one job. It did nothing for every other resource in the bundle the same reader group also needed to see — dashboards, other jobs in the same domain, anything added later. A bundle with dozens of jobs, pipelines, and dashboards means a group missing from one job's permissions block is rarely an isolated gap; it's usually a sign the group was never added anywhere, and every other job is one missing line away from the same problem. Fixing access one resource at a time in a bundle that deploys dozens of resources doesn't scale; it just relocates the next missing-permission incident to whichever resource wasn't touched.
+                </p>
+
+                <h2>What a Bundle's Permissions Model Actually Is</h2>
+
+                <p>
+                    Databricks Asset Bundles support permissions at two levels: per-resource, inside an individual job or pipeline definition, and bundle-wide, in a single <code>permissions:</code> block at the top of <code>databricks.yml</code>. The bundle-wide block is applied to every resource the bundle manages — every job, every pipeline, every dashboard — unless a specific resource overrides it with its own <code>permissions:</code> section. The bundle's deploying identity (the user or service principal running <code>bundle deploy</code>) also gets implicit <code>CAN_MANAGE</code> on everything it deploys, separately from whatever is declared explicitly. Principals can be a <code>user_name</code>, a <code>group_name</code>, or a <code>service_principal_name</code>, and the levels available are the same three regardless of principal type: <code>CAN_VIEW</code>, <code>CAN_RUN</code>, and <code>CAN_MANAGE</code>.
+                </p>
+
+                <p>
+                    That two-level design is what makes a role-based access model tractable in a bundle with a growing resource count: instead of a CI/CD service principal, a developer group, and a set of read-only groups each needing their own line repeated in every job and pipeline file, they can be declared once at the top and inherited everywhere. A bundle's top-level block, once built out, looks something like this:
+                </p>
+
+<pre><code class="language-yaml"># databricks/databricks.yml
+permissions:
+- service_principal_name: ${var.run_as_sp_ci_cd}
+  level: CAN_MANAGE
+- group_name: "<prefix>_Content_CICD_SP_DBX_RELEASE"
+  level: CAN_MANAGE
+- group_name: "<prefix>_Content_CICD_Runner_DBX_Release"
+  level: CAN_RUN
+- group_name: "<prefix>_Content_Developer"
+  level: CAN_RUN
+- group_name: "<prefix>_Content_Reader"
+  level: CAN_VIEW
+- group_name: "<prefix>_Content_Admin"
+  level: CAN_VIEW
+- group_name: "<prefix>_Infrastructure_Reader"
+  level: CAN_VIEW
+- group_name: "<prefix>_Content_Operator"
+  level: CAN_VIEW
+- group_name: "OG_USER_PROJECT_CONTENT_${var.satellite_number}_${bundle.target}_READER"
+  level: CAN_VIEW</code></pre>
+
+                <p>
+                    Two things are worth noticing in that list beyond the fact that it exists. First, the distinction between <code>service_principal_name</code> and <code>group_name</code> entries: the CI/CD deploy identity is granted <code>CAN_MANAGE</code> as a service principal, while every human-facing grant — developer, reader, admin, operator — is a named Active Directory group, so access is managed by group membership rather than by editing this file per person. Second, the one entry that isn't a static string: the satellite reader group interpolates <code>${var.satellite_number}</code> and <code>${bundle.target}</code>, the same two values used elsewhere in the bundle to build environment-specific resource paths. That single line resolves to a different, fully qualified group name per target — the group that's actually valid in TST is not the same string as the one valid in PRD — without needing a second static entry duplicated for each target.
+                </p>
+
+                <h2>The Alternatives</h2>
+
+                <p>
+                    Once the per-job patch closed the immediate ticket, three real options existed for the underlying gap. The first was to leave the fix as-is and repeat it: audit every job and pipeline file under <code>resources/</code> by hand, add the reader group wherever it was missing, and rely on that same manual sweep whenever a new resource was added. That's what the immediate fix already demonstrated doesn't scale — it trades one missing-permission incident for a slower version of the same incident later, on a different resource.
+                </p>
+
+                <p>
+                    The second was to write a script or CI step that diffed each job's <code>permissions:</code> block against an expected group list and failed the pipeline on drift. That's a legitimate pattern in larger platforms, but it means building and maintaining a bespoke enforcement tool on top of a mechanism the bundle format already provides for free — solving a problem the tool itself doesn't have.
+                </p>
+
+                <p>
+                    The third was to stop granting access resource-by-resource and use the bundle's own top-level <code>permissions:</code> block as the single source of truth, letting every resource inherit from it unless it explicitly needs to diverge. This uses a first-class feature of the deployment tool instead of working around it, at the cost of losing some of the fine-grained, resource-by-resource visibility the per-job patch had — a tradeoff that's fine as long as resource-level overrides remain available for the genuine exceptions.
+                </p>
+
+                <h2>The Decision</h2>
+
+                <p>
+                    Centralizing the reader group's access meant adding that same templated group to the top-level block instead of leaving it as a one-off inside a single job file — the direction the fix took once the job-level patch exposed the actual scope of the gap. The dynamic entry at the top of <code>databricks.yml</code> is the result: rather than every job under <code>resources/</code> carrying its own copy of the reader grant, one bundle-wide line covers all of them, and any new job added later inherits the same read access automatically instead of needing a reminder to copy the permissions block from a neighboring file.
+                </p>
+
+                <p>
+                    That's a meaningfully different failure mode than the per-job patch. With a bundle-wide entry, a group is either present once for the whole bundle or it's visibly absent from one list — there's no longer a question of which of N job files happens to be missing the line. The tradeoff runs the other way too: a resource-level override is still the right tool when a specific job genuinely needs different access than everything else in the bundle — the top-level block is a default, not a ceiling, and any resource can still declare its own <code>permissions:</code> to diverge from it.
+                </p>
+
+                <p>
+                    Two things stand out in the resulting block beyond the fact that it exists. First, the distinction between <code>service_principal_name</code> and <code>group_name</code> entries: the CI/CD deploy identity is granted <code>CAN_MANAGE</code> as a service principal, while every human-facing grant — developer, reader, admin, operator — is a named Active Directory group, so access is managed by group membership rather than by editing this file per person. Second, the one entry that isn't a static string: the satellite reader group interpolates <code>${var.satellite_number}</code> and <code>${bundle.target}</code>, the same two values used elsewhere in the bundle to build environment-specific resource paths. That single line resolves to a different, fully qualified group name per target — the group valid in a test environment is not the same string as the one valid in production — without needing a second static entry duplicated for each target.
+                </p>
+
+                <p>
+                    Centralizing the grant only closes the gap if a missing group actually gets noticed before deploy, which put weight on how <code>databricks bundle validate</code> gets used. It's run routinely as a pre-deploy check to catch YAML and reference errors, but it also surfaces warnings about the bundle's resolved configuration — including permission entries that reference variables or groups that don't resolve the way the rest of the bundle expects. Treating that output as informational noise to scroll past is the same mistake as treating a linter's warnings as noise: the warning is the mechanism doing exactly what it's for. The practice that matters here is deliberately reading <code>bundle validate</code> — and <code>bundle deploy</code> run verbosely — as a pre-deploy permissions audit, not only a syntax gate, because it's the only checkpoint that exists before the gap shows up as someone unable to open a job they should be able to see.
+                </p>
+
+                <blockquote>
+                    A missing permission caught by <code>bundle validate</code> costs a few minutes of reading CLI output before a deploy. The same gap caught by a user hitting "access denied" costs a support ticket, an investigation into whether the denial is a bug or intentional, and a re-deploy — for the exact same one-line fix.
+                </blockquote>
+
+                <h2>The Outcome</h2>
+
+                <p>
+                    The environment-templated satellite reader group now resolves <code>CAN_VIEW</code> once, at the bundle level, instead of requiring a matching entry in every job and pipeline definition under <code>resources/</code>. The bundle's top-level <code>permissions:</code> block carries nine entries covering the full access model — CI/CD deploy identity, release and runner service accounts, developer, reader, admin, operator, infrastructure reader, and the environment-templated satellite reader — each declared once and inherited by every resource the bundle manages rather than repeated per file. Any resource that genuinely needs different access still can, through its own <code>permissions:</code> override, but the default case — a new job added to an existing domain — now needs no permissions edit at all to get the access every other resource in the bundle already has.
+                </p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

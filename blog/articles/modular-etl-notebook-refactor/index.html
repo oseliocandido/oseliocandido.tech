@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Breaking Apart a Monolithic ETL Codebase — Oselio Candido</title>
+    <meta name="description" content="A 639-line table-definitions file and a 394-line transform script. Restructuring a Databricks ETL pipeline by domain entity instead of technical layer.">
+    <link rel="canonical" href="https://oseliocandido.tech/blog/articles/modular-etl-notebook-refactor/">
+    <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Oselio Candido">
+    <meta property="og:title" content="Breaking Apart a Monolithic ETL Codebase — Oselio Candido">
+    <meta property="og:description" content="A 639-line table-definitions file and a 394-line transform script. Restructuring a Databricks ETL pipeline by domain entity instead of technical layer.">
+    <meta property="og:url" content="https://oseliocandido.tech/blog/articles/modular-etl-notebook-refactor/">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Breaking Apart a Monolithic ETL Codebase — Oselio Candido">
+    <meta name="twitter:description" content="A 639-line table-definitions file and a 394-line transform script. Restructuring a Databricks ETL pipeline by domain entity instead of technical layer.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../../css/style.css">
+    <link rel="stylesheet" href="../../../css/components.css">
+    <link rel="stylesheet" href="../../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../../index.html">Home</a></li>
+                <li><a href="../../../index.html#about">About</a></li>
+                <li><a href="../../../blog/">Articles</a></li>
+                <li><a href="../../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">Architecture</span>
+                <h1 class="article-page__title">Breaking Apart a Monolithic ETL Codebase: Folder-Per-Entity Instead of File-Per-Layer</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Sep 2, 2026</span>
+                    <span>·</span>
+                    <span>8 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <p>
+                    I wrote about restructuring a FastAPI backend as a <a href="../modular-monolith-ddd/">modular monolith</a> — domain, application, infrastructure, presentation, each module self-contained. This is the same underlying discipline applied somewhere that discipline doesn't usually get discussed: a Databricks ETL codebase, where the default organizing principle tends to be "group by technical layer," and the result was five files that had each grown into their own small monolith.
+                </p>
+
+                <div class="flow-diagram">
+                    <div class="flow-diagram__branch">
+                        <div class="flow-diagram__node">tables_bus.py<small>639 lines, every bus table</small></div>
+                        <div class="flow-diagram__node">02_stage_to_bus.py<small>394 lines, every bus transformation</small></div>
+                    </div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">Restructure by entity</div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">bus/fact_replenishment/<small>data.py + transformations.py, one folder</small></div>
+                </div>
+
+                <h2>The Problem</h2>
+
+                <p>
+                    A warehouse-operations reporting pipeline had grown, table by table, into a structure organized around technical layer rather than business object: one file held every bus-layer table definition, another held every bus-layer transformation, and so on for stage and serve. By the time it needed a serious touch, two files anchored the bus layer, connected only by a naming convention someone had to already know:
+                </p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>File</th>
+                            <th>Lines</th>
+                            <th>Contents</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td><code>tables_bus.py</code></td>
+                            <td>639</td>
+                            <td>Every bus-layer table definition — 11 fact and dimension tables, back to back</td>
+                        </tr>
+                        <tr>
+                            <td><code>02_stage_to_bus.py</code></td>
+                            <td>394</td>
+                            <td>Every bus-layer transformation — same 11 tables, different file, different order</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p>
+                    The practical cost showed up in ordinary changes:
+                </p>
+
+                <ul>
+                    <li><strong>Two-file navigation for one-line changes.</strong> Adding a column to <code>fact_replenishment</code> meant opening the 639-line file to find its eleven-line definition block, then opening the 394-line file to find its transformation logic somewhere else in file order.</li>
+                    <li><strong>Merge conflicts between unrelated changes.</strong> Two engineers touching different tables in the same sprint collided on <code>tables_bus.py</code> even though their actual changes never overlapped — resolving it meant verifying that eleven unrelated table definitions hadn't been scrambled together, not just the one either engineer cared about.</li>
+                </ul>
+
+                <div class="flow-diagram">
+                    <div class="flow-diagram__node">Change: add a column to fact_replenishment</div>
+                    <div class="flow-diagram__branch">
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">schema</span>tables_bus.py<small>find it among 639 lines</small></div>
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">logic</span>02_stage_to_bus.py<small>find it among 394 lines</small></div>
+                    </div>
+                </div>
+
+                <h2>What Grouping-By-Layer Actually Costs</h2>
+
+                <p>
+                    Grouping by technical layer isn't an unreasonable instinct — it mirrors how the medallion architecture itself is described, raw / stage / bus / serve, and early on, when there were three tables instead of eleven, one file per layer was genuinely simpler than eleven small ones. The instinct just doesn't scale with table count, because a file organized by layer conflates two things that should be independent: how many tables exist (grows over time, unbounded) and how the codebase is organized (fixed, one file per layer, regardless of how many tables that file now holds). A monolithic table-definitions file only stays proportionate to the pipeline's actual complexity for as long as the pipeline stays small — past that point, file size becomes a function of table count, not of any actual coupling between those tables.
+                </p>
+
+<pre><code class="language-python"># tables_bus.py — before (abbreviated: 639 lines, 11 tables, one file)
+class DimFacilityDetails(BaseTable):
+    __tablename__ = "dim_facility_details"
+    facility_sk = Column(BigInteger, primary_key=True)
+    facility_id = Column(String)
+    corporate = Column(String)
+    # ...42 more columns
+
+class FactReplenishment(BaseTable):
+    __tablename__ = "fact_replenishment"
+    replenishment_sk = Column(BigInteger, primary_key=True)
+    facility_sk = Column(BigInteger, ForeignKey("dim_facility_details.facility_sk"))
+    # ...18 more columns
+
+class FactPutaway(BaseTable):
+    __tablename__ = "fact_putaway"
+    # ...another unrelated table, same file
+</code></pre>
+
+                <h2>The Alternatives</h2>
+
+                <p>
+                    <strong>Split by layer, keep splitting by layer.</strong> The lighter-touch option was simply breaking the 639-line file into several smaller layer-scoped files — fact tables in one file, dimension tables in another. This helps at the margin, but it doesn't fix the underlying problem: a table's schema and its transformation logic still live in two different files, in two different directories, connected only by matching names, and every table still shares a file with several others it has no actual relationship to.
+                </p>
+
+                <p>
+                    <strong>One file per table, transformations still centralized.</strong> Split the table-definitions file into one file per table, but leave the transformation script as a single per-layer orchestration file. This solves half the problem — finding a table's schema gets trivial — but the transformation logic, which is usually where the actual business rules and the actual bugs live, stays exactly as tangled as before.
+                </p>
+
+                <p>
+                    <strong>Folder per entity, colocating schema and transformation.</strong> Give every table its own folder containing both its schema definition and its transformation logic, with the per-layer script reduced to orchestration — calling each entity's transformation function in the right order, not containing the logic itself.
+                </p>
+
+                <h2>The Decision</h2>
+
+                <p>
+                    The third option is what shipped, and the folder structure makes the reasoning legible on its own:
+                </p>
+
+<pre><code class="language-text">warehouse_efficiency_report/
+├── 02_stage_to_bus.py                  # orchestration only: import + call, in order
+└── bus/
+    ├── data/
+    │   ├── dim_facility_details.py     # schema for this one table
+    │   ├── fact_replenishment.py
+    │   └── fact_putaway.py
+    ├── dim_facility_details/
+    │   └── transformations.py          # business logic for this one table
+    ├── fact_replenishment/
+    │   └── transformations.py
+    └── fact_putaway/
+        └── transformations.py</code></pre>
+
+                <p>
+                    Touching <code>fact_replenishment</code> now means opening one folder — its schema and its transformation are physically next to each other, not connected by a naming convention across two large files. The orchestration script that used to hold 394 lines of transformation logic shrank to a sequence of function calls, one per entity, in dependency order:
+                </p>
+
+<pre><code class="language-python"># 02_stage_to_bus.py — after
+from bus.dim_facility_details.transformations import build_dim_facility_details
+from bus.fact_replenishment.transformations import build_fact_replenishment
+from bus.fact_putaway.transformations import build_fact_putaway
+
+def run(spark, cfg):
+    build_dim_facility_details(spark, cfg)   # dimension first
+    build_fact_replenishment(spark, cfg)     # depends on the dimension above
+    build_fact_putaway(spark, cfg)</code></pre>
+
+                <div class="flow-diagram">
+                    <div class="flow-diagram__node">Change: add a column to fact_replenishment</div>
+                    <div class="flow-diagram__arrow"></div>
+                    <div class="flow-diagram__node">bus/fact_replenishment/<small>data.py + transformations.py, same folder</small></div>
+                </div>
+
+                <p>
+                    The net effect on the codebase's size was the counter-intuitive part. Splitting eleven tables and their transformations into more than a hundred small files sounds like it should add code — boilerplate imports, more file headers, more scaffolding. It didn't. The change removed more lines than it added, because a large fraction of what made the original files large wasn't unique logic — it was near-identical boilerplate repeated eleven times with minor variations, and once each table had its own small, focused file, the repetition became visible enough to actually collapse.
+                </p>
+
+                <h2>The Second Pass: What Splitting Made Visible</h2>
+
+                <p>
+                    Folder-per-entity solved the navigation and merge-conflict problem, but it surfaced a different one: with each stage-layer transformation now isolated in its own small file, it became obvious that several of them contained nearly identical column-validation and date-parsing code, copy-pasted from table to table with small variations nobody had cleaned up. Nine separate staging transformations — covering source feeds from receiving, inventory location, and task-tracking tables — each had their own slightly-different version of "check this column isn't null," "normalize this header string," "parse this date format."
+                </p>
+
+<pre><code class="language-python"># Before: nearly identical logic, duplicated across nine files
+# stg/facility/transformations.py
+df = df.withColumn("facility_id", trim(upper(col("facility_id"))))
+df = df.filter(col("facility_id").isNotNull())
+
+# stg/task_hdr/transformations.py — same idea, drifted implementation
+df = df.withColumn("task_id", upper(trim(col("task_id"))))
+df = df.na.drop(subset=["task_id"])</code></pre>
+
+                <p>
+                    That duplication was invisible while it lived inside two 300-plus-line files where nobody was reading the full file at once — folder-per-entity made each transformation small enough that the repetition across files became obvious by inspection. The fix was extracting the shared logic into a small, tested utilities module:
+                </p>
+
+<pre><code class="language-python"># tools/dataframe_utils/dataframe_normalizers.py
+def normalize_identifier_column(df: DataFrame, column: str) -> DataFrame:
+    """Trim and uppercase an identifier column, drop nulls.
+
+    Extracted after the same trim/upper/drop-null sequence turned up,
+    each time slightly differently, across nine staging transformations.
+    """
+    return (
+        df.withColumn(column, trim(upper(col(column))))
+          .filter(col(column).isNotNull())
+    )</code></pre>
+
+                <p>
+                    Every one of those nine call sites collapsed to a single line calling the shared function, and — because the function was now small, named, and had no Spark session or table dependencies to fake — it got a real unit test, something that wasn't practical when the same logic was buried as five inline lines inside a 100-plus-line per-table transformation function.
+                </p>
+
+                <blockquote>
+                    Splitting a monolith by entity doesn't just make each piece easier to find — it makes the duplication between pieces visible for the first time. A 639-line file hides repetition inside its own bulk; eleven 60-line files make the same repetition impossible to miss.
+                </blockquote>
+
+                <h2>The Outcome</h2>
+
+                <p>
+                    Neither change altered what the pipeline actually computed — every table produces the same output today as it did before either refactor. What changed was the shape of the codebase:
+                </p>
+
+                <ul>
+                    <li><strong>121 files touched, net lines removed</strong> — a rare shape for a refactor usually assumed to add scaffolding, because so much of the original size was repeated boilerplate, not unique logic.</li>
+                    <li><strong>A comparable number of lines added back</strong> in the follow-up utilities pass — but roughly a third of that was new unit test coverage for logic that had never been testable in its original inline, duplicated form.</li>
+                    <li><strong>A schema change to one table now touches one folder</strong>, instead of a careful edit inside a shared file eleven other tables also depend on.</li>
+                    <li><strong>A date-parsing or normalization bug gets fixed once</strong>, in one tested function, instead of nine times with nine slightly different fixes.</li>
+                </ul>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

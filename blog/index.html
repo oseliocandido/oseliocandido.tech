@@ -101,7 +101,7 @@
                     chips +
                     (clickable ? '<span class="article-card__read">Read →</span>' : '');
                 if (clickable) {
-                    return '<a href="../articles/' + a.slug + '/" class="article-card reveal" data-discipline="' + a.discipline + '" data-tags="' + a.tags.join(' ') + '">' + inner + '</a>';
+                    return '<a href="articles/' + a.slug + '/" class="article-card reveal" data-discipline="' + a.discipline + '" data-tags="' + a.tags.join(' ') + '">' + inner + '</a>';
                 }
                 return '<div class="article-card article-card--planned reveal" data-discipline="' + a.discipline + '" data-tags="' + a.tags.join(' ') + '">' + inner + '</div>';
             }).join('');

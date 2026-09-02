@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Leaky-Bucket Rate Limiting in Nginx — Oselio Candido</title>
+    <meta name="description" content="Leaky-bucket rate limits on login and contact endpoints with nginx's limit_req — the alternatives, the config, and the blind spot worth naming.">
+    <link rel="canonical" href="https://oseliocandido.tech/blog/articles/nginx-leaky-bucket-rate-limiting/">
+    <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Oselio Candido">
+    <meta property="og:title" content="Leaky-Bucket Rate Limiting in Nginx — Oselio Candido">
+    <meta property="og:description" content="Leaky-bucket rate limits on login and contact endpoints with nginx's limit_req — the alternatives, the config, and the blind spot worth naming.">
+    <meta property="og:url" content="https://oseliocandido.tech/blog/articles/nginx-leaky-bucket-rate-limiting/">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Leaky-Bucket Rate Limiting in Nginx — Oselio Candido">
+    <meta name="twitter:description" content="Leaky-bucket rate limits on login and contact endpoints with nginx's limit_req — the alternatives, the config, and the blind spot worth naming.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../../css/style.css">
+    <link rel="stylesheet" href="../../../css/components.css">
+    <link rel="stylesheet" href="../../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../../index.html" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../../index.html">Home</a></li>
+                <li><a href="../../../index.html#about">About</a></li>
+                <li><a href="../../../blog/">Articles</a></li>
+                <li><a href="../../../index.html#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Article -->
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">DevOps &amp; CI/CD</span>
+                <h1 class="article-page__title">Leaky Buckets at the Edge: Rate Limiting Login and Contact Endpoints in Nginx</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Jul 2026</span>
+                    <span>·</span>
+                    <span>6 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <h2>The problem</h2>
+                <p>An application server sitting directly on the internet has to spend its own CPU cycles deciding whether every request is legitimate. A login endpoint with no rate limiting will happily accept a credential-stuffing script's ten thousand attempts a minute, burning database connections and process time on traffic that should never have reached the app in the first place.</p>
+                <p>A public contact form with no throttling has the same problem in a different shape: it becomes a free spam relay, and every submission still walks the full request pipeline — validation, mail dispatch, logging — before anyone decides it was junk.</p>
+                <p>Neither of these is an application-logic problem. They're edge problems, and solving them inside the app means paying their cost in the app's own resources instead of rejecting the traffic before it arrives.</p>
+
+                <h2>What is a leaky bucket rate limiter</h2>
+                <p>Nginx's <code>limit_req</code> module implements the <strong>leaky bucket</strong> algorithm. Picture a bucket with a hole: requests pour in at whatever rate the client sends them, and they leak out — get processed — at a fixed rate you configure. If requests arrive faster than the hole drains, the bucket fills; when it overflows, requests are rejected.</p>
+                <p>Two concepts do all the work:</p>
+                <ul>
+                    <li><strong>The zone</strong> — shared memory where nginx tracks per-key state. Keying on <code>$binary_remote_addr</code> means one bucket per client IP; a 10&nbsp;MB zone holds state for roughly 160,000 addresses.</li>
+                    <li><strong>Burst + nodelay</strong> — real traffic is spiky. <code>burst</code> is the bucket's depth: how many requests over the steady rate are tolerated. <code>nodelay</code> says "serve burst requests immediately instead of queuing them" — excess beyond the burst is rejected with an error, not delayed.</li>
+                </ul>
+                <p>For comparison, a <em>token bucket</em> — the other classic algorithm, used by many API gateways — accumulates permission over idle time, allowing genuine bursts at full speed. Nginx's leaky bucket with <code>nodelay</code> behaves almost identically in practice, which matters for what comes next: it meant reaching for the module nginx already ships with, instead of a heavier piece of middleware.</p>
+
+                <h2>The alternatives</h2>
+                <p>Rate limiting could have been implemented inside the application instead of at the edge, and each option carried real trade-offs.</p>
+                <ul>
+                    <li><strong>Application-level rate limiting</strong> (a middleware decorator counting requests per IP or per user in the app process, backed by an in-memory dict or Redis) — gives finer control, since the app knows who's logged in, not just which IP is asking. But every rejected request still costs a full trip through the app's request pipeline before it can be turned away, and the floods that matter most are exactly the ones you want rejected before they ever reach application code.</li>
+                    <li><strong>A dedicated API gateway or WAF</strong> (Kong, Cloudflare, AWS API Gateway) — offers richer rules, geo-based limits, bot scoring. For a single-box deployment this is real infrastructure and cost for a problem two lines of nginx config solve just as well at the traffic volumes involved.</li>
+                    <li><strong>No rate limiting, rely on infrastructure-level DDoS protection</strong> — covers volumetric floods but does nothing for a low-and-slow credential-stuffing attempt that looks like ordinary traffic to a network-layer filter.</li>
+                </ul>
+                <p>Given a single-box deployment already running nginx as a reverse proxy in front of the app, the edge was already there — the question was whether to use it or bypass it.</p>
+
+                <h2>The decision</h2>
+                <p>Not every endpoint needs limiting — the dangerous ones are authentication (credential stuffing) and the public contact form (spam). This is the actual config, from the host nginx file in front of the FastAPI backend on <code>127.0.0.1:8001</code>. Each endpoint got its own zone, sized to how abusive traffic against it actually looks:</p>
+                <pre><code class="language-nginx">limit_req_zone $binary_remote_addr
+    zone=login_limit_beta:10m   rate=5r/m;
+
+limit_req_zone $binary_remote_addr
+    zone=contact_limit_beta:10m rate=3r/m;</code></pre>
+                <p>And each zone is applied at its location, with a burst allowance and an honest error contract:</p>
+                <pre><code class="language-nginx">location /api/auth/ {
+    limit_req zone=login_limit_beta burst=3 nodelay;
+    limit_req_status 429;
+    add_header Retry-After 60 always;
+
+    proxy_pass http://fastapi_backend_beta/api/auth/;
+    proxy_connect_timeout 5s;
+    proxy_send_timeout 5s;
+    proxy_read_timeout 5s;
+}
+
+location = /api/contact {
+    limit_req zone=contact_limit_beta burst=5 nodelay;
+    limit_req_status 429;
+    add_header Retry-After 60 always;
+
+    proxy_pass http://fastapi_backend_beta/api/contact;
+    proxy_connect_timeout 10s;
+    proxy_send_timeout 10s;
+    proxy_read_timeout 10s;
+}</code></pre>
+                <p>Reading the login numbers: a client may make 5 auth requests per minute sustained, with 3 extra tolerated in a spike — plenty for a human who mistypes a password twice and then finds their TOTP code, hopeless for a script trying a password list. Rejected requests get <code>429 Too Many Requests</code> plus a <code>Retry-After: 60</code> header, so well-behaved clients know exactly what to do, and the app process never spends a single CPU cycle on the flood.</p>
+                <p>The two locations also carry different proxy timeouts — 5 seconds on <code>/api/auth/</code>, 10 on <code>/api/contact</code> — which isn't part of the rate-limiting logic itself, but reflects the same instinct: an auth check should be fast and fail fast, while a contact-form submission (which may trigger mail dispatch downstream) is given more room before nginx gives up on the upstream.</p>
+
+                <h3>Per-IP, not per-account</h3>
+                <p>At the edge, the IP is all nginx knows — it can't see who the login is <em>for</em>. Per-IP limiting is the coarse outer wall; finer per-account protections, like MFA (covered in <a href="../mfa-totp-rfc6238/">its own write-up</a>), belong in the application, where identity actually exists.</p>
+                <blockquote>The edge handles what it can see cheaply; the app handles what requires context — that division of labor, not any single directive, is the actual design decision here.</blockquote>
+                <p>Per-IP limiting has a known blind spot worth naming rather than glossing over: corporate NATs put many humans behind one IP, so they share a bucket, and a botnet spreads one attacker across many IPs, so no single bucket ever fills. The mitigation doesn't eliminate credential stuffing — it raises its cost enough that unsophisticated scripts fail outright and sophisticated ones have to work much harder, while human users are barely affected.</p>
+
+                <h2>The outcome</h2>
+                <p>Authentication and contact-form abuse now gets rejected before it ever touches application code: a flood past the configured rate returns a <code>429</code> with a clear <code>Retry-After</code> hint, at the cost of a shared-memory lookup instead of a full request-handling cycle. The same zone definitions carry across environments — production, staging, and a demo tier — differing only in the upstream port and zone name, so the same protection applies everywhere the app is reachable, at effectively zero ongoing cost beyond the initial configuration.</p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../../index.html">← Back to portfolio</a></p>
+        </div>
+    </footer>
+
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>
