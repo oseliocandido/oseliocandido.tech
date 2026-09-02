@@ -150,7 +150,8 @@
 .article-page__body p code,
 .article-page__body li code,
 .article-page__body h2 code,
-.article-page__body h3 code {
+.article-page__body h3 code,
+.article-page__body td code {
     background-color: var(--surface-2);
     border: 1px solid var(--border);
     border-radius: 4px;
