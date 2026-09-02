@@ -1,0 +1,107 @@
+# --------------------------------------------------
+# Host nginx config for the main personal site (static build, no backend).
+#
+# Host: oseliocandido.tech (canonical) / www.oseliocandido.tech (redirects in)
+# Deploy path: must match the DEPLOY_PATH secret used by
+#              .github/workflows/deploy.yml (e.g. /var/www/oseliocandido.tech)
+# Issue a cert first: certbot --nginx -d oseliocandido.tech -d www.oseliocandido.tech
+# --------------------------------------------------
+
+access_log /var/log/nginx/oseliocandido.tech.access.log;
+error_log  /var/log/nginx/oseliocandido.tech.error.log warn;
+
+# -------- HTTP: ACME challenge + redirect everything else to HTTPS --------
+server {
+    listen 80;
+    listen [::]:80;
+    server_name oseliocandido.tech www.oseliocandido.tech;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/oseliocandido.tech;
+    }
+
+    location / {
+        return 301 https://oseliocandido.tech$request_uri;
+    }
+}
+
+# -------- HTTPS: www redirects to the apex (canonical) host --------
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name www.oseliocandido.tech;
+
+    ssl_certificate /etc/letsencrypt/live/oseliocandido.tech/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/oseliocandido.tech/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    return 301 https://oseliocandido.tech$request_uri;
+}
+
+# -------- HTTPS: the actual site --------
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name oseliocandido.tech;
+
+    ssl_certificate /etc/letsencrypt/live/oseliocandido.tech/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/oseliocandido.tech/privkey.pem;
+    include /etc/letsencrypt/options-ssl-nginx.conf;
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
+
+    gzip on;
+    gzip_vary on;
+    gzip_proxied any;
+    gzip_comp_level 6;
+    gzip_types text/plain text/css text/xml application/javascript application/json application/xml image/svg+xml;
+
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header X-Frame-Options "DENY" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+    # script-src needs cdnjs for Prism.js (syntax highlighting) and 'unsafe-inline'
+    # for the small inline nav-progress/stat-counter scripts on every page — no
+    # user input ever reaches them, but externalizing them later would let this
+    # drop 'unsafe-inline'. No inline styles or style attributes anywhere on the
+    # site, so style-src stays 'self' plus Google Fonts, the only other
+    # third-party origin the site loads.
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; object-src 'none'; upgrade-insecure-requests;" always;
+
+    root /var/www/oseliocandido.tech;
+    index index.html;
+
+    # Static site, not an SPA — no fallback to index.html for unknown paths,
+    # a missing article/page should 404 rather than silently redirect home.
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # HTML: always revalidate, nothing here is content-hashed, so a stale
+    # cached page after a deploy would be worse than the extra round trip.
+    location ~* \.html$ {
+        add_header Cache-Control "public, max-age=0, must-revalidate";
+    }
+
+    # CSS/JS: same reasoning as HTML — filenames don't change per deploy,
+    # so a short cache with revalidation avoids serving a stale bundle.
+    location ~* \.(css|js)$ {
+        add_header Cache-Control "public, max-age=3600, must-revalidate";
+    }
+
+    # Images, fonts, favicon: rarely change and aren't referenced by a
+    # content hash either, so cache for a while but stop short of immutable.
+    location ~* \.(png|jpe?g|gif|svg|ico|webp|woff2?)$ {
+        access_log off;
+        add_header Cache-Control "public, max-age=2592000";
+    }
+
+    location = /sitemap.xml {
+        add_header Cache-Control "public, max-age=3600";
+    }
+
+    location = /robots.txt {
+        add_header Cache-Control "public, max-age=3600";
+    }
+}
