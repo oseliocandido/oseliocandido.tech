@@ -53,13 +53,12 @@ window.ARTICLES = [
     },
     {
         slug: 'ai-agents-data-engineering',
-        title: 'AI Agents in Data Engineering: GitHub Copilot for Feature Delivery',
-        desc: 'Building specialised Copilot agents that compress the requirements → production pipeline delivery loop.',
+        title: 'AI Agents in Data Engineering: Compressing the Delivery Loop with Claude Code',
+        desc: 'Building specialised agent workflows that compress the requirements → production pipeline delivery loop.',
         date: '2026-04-17',
-        readTime: 12,
         discipline: 'ai-engineering',
         tags: [],
-        status: 'published',
+        status: 'planned',
         featured: false
     },
     {
