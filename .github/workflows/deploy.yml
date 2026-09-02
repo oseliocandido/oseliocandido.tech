@@ -16,6 +16,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Regenerate sitemap.xml and robots.txt
+        run: python scripts/generate_sitemap.py
+
       - name: Install sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
 
