@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <rect width="64" height="64" rx="14" fill="#14213d"/>
+  <text x="32" y="41" font-family="'Space Grotesk', 'Segoe UI', Arial, sans-serif" font-size="26" font-weight="700" fill="#ffffff" text-anchor="middle">OC</text>
+  <rect x="17" y="47" width="30" height="4" rx="2" fill="#fca311"/>
+</svg>

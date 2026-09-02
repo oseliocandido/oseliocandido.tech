@@ -1,0 +1,37 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: Deploy static site to server
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install sshpass
+        run: sudo apt-get update && sudo apt-get install -y sshpass
+
+      - name: Rsync site to server
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          sshpass -e rsync -avzc --delete \
+            --exclude ".git" --exclude ".github" --exclude "scripts" \
+            -e "ssh -p ${{ secrets.SSH_PORT }} -o StrictHostKeyChecking=no" \
+            ./ "${{ secrets.SSH_USER }}@${{ secrets.HOST }}:${{ secrets.DEPLOY_PATH }}/"
+
+      - name: Verify deployment
+        env:
+          SSHPASS: ${{ secrets.SSH_PASSWORD }}
+        run: |
+          sshpass -e ssh -p ${{ secrets.SSH_PORT }} -o StrictHostKeyChecking=no "${{ secrets.SSH_USER }}@${{ secrets.HOST }}" '
+            test -f "${{ secrets.DEPLOY_PATH }}/index.html" && echo "Deploy verified: index.html present"
+          '

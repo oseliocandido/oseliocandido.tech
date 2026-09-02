@@ -13,8 +13,7 @@ import re
 from datetime import date
 from pathlib import Path
 
-# TODO: set this to the live domain before deploying (e.g. "https://oselio.dev")
-SITE_URL = "https://example.com"
+SITE_URL = "https://oseliocandido.tech"
 
 WEBSITE_DIR = Path(__file__).resolve().parent.parent
 ARTICLES_JS = WEBSITE_DIR / "data" / "articles.js"
