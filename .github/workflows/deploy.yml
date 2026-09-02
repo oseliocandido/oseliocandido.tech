@@ -16,29 +16,32 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Regenerate sitemap.xml and robots.txt
-        run: python scripts/generate_sitemap.py
-
       - name: Install sshpass
         run: sudo apt-get update && sudo apt-get install -y sshpass
 
-      - name: Rsync site to server
+      # DEPLOY_PATH is the git clone on the server (source of truth, updated
+      # via git pull). The site is actually served from /var/www/oseliocandido.tech,
+      # so every deploy re-syncs that clone into the serve path afterward —
+      # repo-only files (.git, .github, scripts, deploy) never reach it.
+      - name: Deploy (git pull + sync to serve path)
         env:
           SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
-          sshpass -e rsync -avzc --delete \
-            --exclude ".git" --exclude ".github" --exclude "scripts" \
-            -e "ssh -p ${{ secrets.SSH_PORT }} -o StrictHostKeyChecking=no" \
-            ./ "${{ secrets.SSH_USER }}@${{ secrets.HOST }}:${{ secrets.DEPLOY_PATH }}/"
+          sshpass -e ssh -p ${{ secrets.SSH_PORT }} -o StrictHostKeyChecking=no "${{ secrets.SSH_USER }}@${{ secrets.HOST }}" '
+            set -e
+            cd "${{ secrets.DEPLOY_PATH }}"
+            git checkout -- sitemap.xml robots.txt
+            git pull --ff-only
+            python3 scripts/generate_sitemap.py
+            rsync -a --delete \
+              --exclude ".git" --exclude ".github" --exclude "scripts" --exclude "deploy" \
+              ./ /var/www/oseliocandido.tech/
+          '
 
       - name: Verify deployment
         env:
           SSHPASS: ${{ secrets.SSH_PASSWORD }}
         run: |
           sshpass -e ssh -p ${{ secrets.SSH_PORT }} -o StrictHostKeyChecking=no "${{ secrets.SSH_USER }}@${{ secrets.HOST }}" '
-            test -f "${{ secrets.DEPLOY_PATH }}/index.html" && echo "Deploy verified: index.html present"
+            test -f /var/www/oseliocandido.tech/index.html && echo "Deploy verified: index.html present"
           '
