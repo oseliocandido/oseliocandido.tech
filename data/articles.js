@@ -52,16 +52,6 @@ window.ARTICLES = [
         featured: false
     },
     {
-        slug: 'ai-agents-data-engineering',
-        title: 'AI Agents in Data Engineering: Compressing the Delivery Loop with Claude Code',
-        desc: 'Building specialised agent workflows that compress the requirements → production pipeline delivery loop.',
-        date: '2026-04-17',
-        discipline: 'ai-engineering',
-        tags: [],
-        status: 'planned',
-        featured: false
-    },
-    {
         slug: 'medallion-architecture-multi-country',
         title: 'Medallion Architecture in Practice: Lessons from Building a Department Analytics Domain from Scratch',
         desc: 'A full star-schema HR domain — 30+ KPIs across 4+ markets — built layer by layer on Databricks, plus the multi-country schema lessons learned scaling it from 1 to 6 countries.',
@@ -80,17 +70,6 @@ window.ARTICLES = [
         readTime: 13,
         discipline: 'data-engineering',
         tags: ['databricks'],
-        status: 'published',
-        featured: false
-    },
-    {
-        slug: 'olap-performance-cost-optimisation',
-        title: "Finding the Dimensions Nobody Was Using: SSAS Cube Pruning by Parsing the Cube's Own XML",
-        desc: "A PowerShell script that parsed the cube's XML definition, a Python cross-reference against real usage, and a Power BI view of the gap — how unused dimensions were found and removed.",
-        date: '2025-08-19',
-        readTime: 6,
-        discipline: 'data-engineering',
-        tags: ['performance', 'cost'],
         status: 'published',
         featured: false
     },
@@ -270,16 +249,6 @@ window.ARTICLES = [
         discipline: 'backend',
         tags: ['ddd', 'fastapi'],
         status: 'published',
-        featured: false
-    },
-    {
-        slug: 'one-quality-gate-every-layer',
-        title: 'One Quality Gate for Every Layer: Coverage, Complexity and File-Size Limits in CI',
-        desc: 'A single Python gate engine driving lint, typing, coverage ≥75%, cyclomatic complexity, and a 500-line file limit — hard thresholds, no noqa escapes, for backend and frontend alike.',
-        date: '2026-09-22',
-        discipline: 'devops',
-        tags: ['ci-cd', 'code-quality'],
-        status: 'planned',
         featured: false
     },
     {
