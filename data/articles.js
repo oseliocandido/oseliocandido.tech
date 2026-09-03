@@ -167,7 +167,7 @@ window.ARTICLES = [
         title: 'Domain Errors That Speak HTTP: One Exception Base, Three Handlers',
         desc: 'Business rules raise domain exceptions; three global handlers translate them to HTTP. How routers stay thin when every error already knows its status code.',
         date: '2026-07-15',
-        readTime: 8,
+        readTime: 10,
         discipline: 'backend',
         tags: ['fastapi', 'ddd'],
         status: 'published',

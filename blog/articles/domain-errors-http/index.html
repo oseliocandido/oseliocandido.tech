@@ -53,13 +53,13 @@
                     <span>·</span>
                     <span>Jul 2026</span>
                     <span>·</span>
-                    <span>8 min read</span>
+                    <span>10 min read</span>
                 </div>
             </div>
 
             <article class="article-page__body">
 
-                <p>There's a moment in every backend's life when a service method needs to say "this order doesn't exist." The tempting shortcut is to raise <code>HTTPException(404)</code> right there in the business logic — and now the domain layer imports FastAPI, business rules know about status codes, and services can never be reused outside a web request. Routers balloon into translation tables, duplicated across every endpoint, drifting out of sync one copy-paste at a time. Multiply that across dozens of endpoints and the codebase ends up with as many opinions about what a "not found" response looks like as there are routers that handle one.</p>
+                <p>A business rule knows what went wrong. HTTP knows how to communicate it. The mistake is making the business rule responsible for both. There's a moment in every backend's life when a service method needs to say "this order doesn't exist." The tempting shortcut is to raise <code>HTTPException(404)</code> right there in the business logic — and now the domain layer imports FastAPI, business rules know about status codes, and services can never be reused outside a web request. Routers balloon into translation tables, duplicated across every endpoint, drifting out of sync one copy-paste at a time. Multiply that across dozens of endpoints and the codebase ends up with as many opinions about what a "not found" response looks like as there are routers that handle one.</p>
 
                 <h2>The problem</h2>
                 <p>In a <a href="../modular-monolith-ddd/">layered backend</a>, business rules should know nothing about HTTP — they should be callable from a web request, a CLI script, or a background job without dragging a web framework along for the ride. But errors ultimately have to leave the process as HTTP responses with a status code and a body the frontend can parse. Someone has to do that translation, and the naive answers all fail in the same way: they couple something that should stay generic (a business rule) to something that should stay local (a transport concern), or they duplicate the coupling across every place an error can surface.</p>
@@ -71,7 +71,7 @@
                     <li><strong>It separates detection from handling.</strong> The code that discovers the problem (deep in a service) rarely knows what the response should look like (a JSON body? a retry? a log line?). Exceptions let the discovery site raise and let a boundary decide.</li>
                     <li><strong>It propagates until something handles it.</strong> A returned error code can be dropped on the floor by a caller that forgets to check it; an unhandled exception, by contrast, keeps bubbling up until a handler explicitly catches it. Failure is loud by default.</li>
                 </ul>
-                <p>The classic misuse is exceptions as control flow — raising to break out of a loop, or catching broadly just to continue. The rule of thumb: an exception represents a <em>broken contract</em>, not a <em>branch</em>. "Product not found" when the caller asked for a specific product breaks a contract. "List returned zero products" is just a value, and should be returned, not raised.</p>
+                <p>The classic misuse is exceptions as control flow — raising to break out of a loop, or catching broadly just to continue. The rule of thumb: an exception represents a failure the current layer cannot meaningfully handle, not an ordinary branch in the algorithm. "Product not found" when the caller asked for a specific product is a failure the service can't resolve on its own — someone further up has to decide what "not found" means to the caller. "List returned zero products" is just a value, and should be returned, not raised.</p>
                 <p>A <em>domain</em> exception narrows that further: it's an exception type that belongs to the business layer, carries enough metadata to describe itself (a stable machine-readable code, a category of failure), and says nothing about how it will eventually be rendered to a client. It's the difference between "the order doesn't exist" as a fact about the business, and "return a 404" as a fact about HTTP.</p>
 
                 <h2>The alternatives</h2>
@@ -108,8 +108,9 @@ class OrderNotFoundError(DomainError):
 
 class DuplicateProductError(DomainError):
     code = "PRODUCT_DUPLICATE"
-    http_status = 400</code></pre>
-                <p>Note what the domain layer knows here: a code, and yes, an HTTP status. Purists might argue that belongs exclusively to the presentation layer — in practice, it's treated as transport-agnostic classification metadata: "not found," "conflict," and "unauthorized" are already domain concepts, and HTTP is simply the one adapter this system currently has to interpret them. The domain still imports zero framework code; nothing about the class depends on how it will eventually be serialized.</p>
+    http_status = 409</code></pre>
+                <p><code>DuplicateProductError</code> is 409, not 400: the request itself is well-formed, it's the current state of the resource it conflicts with — a 400 would tell the client its input was malformed, which isn't what happened.</p>
+                <p>Note what the domain layer knows here: a code, and an HTTP status. Strictly speaking that second attribute makes these errors application-facing rather than purely domain-level — 404, 401, and 409 are HTTP concepts, not transport-agnostic classification metadata, and a CLI or a message consumer calling the same service has no use for them. That's a deliberate coupling, not an invisible one: <code>code</code> is what a business rule actually knows ("this order doesn't exist"); <code>http_status</code> is a convenience field for the one transport this service currently has. The alternative is a central <code>code → status</code> registry living outside the module that owns the rule — which doesn't remove the coupling, it just relocates it somewhere easier to forget to update when a new error is added. For a single-transport service, keeping the mapping on the class, next to the rule, is worth the honesty cost of admitting the domain layer isn't purely HTTP-ignorant.</p>
 
                 <h3>A small number of handlers, from specific to catch-all</h3>
                 <p>The translation to an actual HTTP response happens in a small, fixed set of handlers registered once, ordered from most specific to catch-all:</p>
@@ -120,20 +121,21 @@ class DuplicateProductError(DomainError):
                            "message": err.message}},
     )
 
-async def value_error_handler(request, err: ValueError):
-    # 422, code VALIDATION_ERROR
+async def request_validation_handler(request, err: RequestValidationError):
+    # 422, code VALIDATION_ERROR — malformed input caught by pydantic
     ...
 
 async def unhandled_error_handler(request, err: Exception):
     logger.exception("Unhandled error")
     # 500, code INTERNAL_ERROR — details logged, never leaked
     ...</code></pre>
+                <p>The middle handler used to catch a bare <code>ValueError</code> and map any instance of it to 422. That's a convenient shortcut, but <code>ValueError</code> is a standard-library exception with no fixed meaning — nothing stops an unrelated bug (a bad int conversion, a misused library call) from raising one and getting silently reported to the client as <code>VALIDATION_ERROR</code> instead of surfacing as the 500 it actually is. It's registered against FastAPI's own <code>RequestValidationError</code> instead — the exception pydantic already raises when a request body fails schema validation, which is exactly and only what "malformed input" means. A business rule that wants to reject input for a domain reason (not merely wrong shape) raises a domain error like <code>DuplicateProductError</code>, not this one.</p>
                 <ul>
                     <li><strong>Any <code>DomainError</code></strong> resolves to its own <code>http_status</code>, with a body shaped <code>{"error": {"code", "message"}}</code>. Every business error, one shape.</li>
-                    <li><strong>A bare <code>ValueError</code></strong> maps to 422 with code <code>VALIDATION_ERROR</code> — malformed input that slipped past schema validation.</li>
+                    <li><strong>A <code>RequestValidationError</code></strong> maps to 422 with code <code>VALIDATION_ERROR</code> — schema-level input rejection, before any business logic runs.</li>
                     <li><strong>Everything else</strong> maps to 500 with code <code>INTERNAL_ERROR</code>. The stack trace goes to the log; the client gets a generic body. An unexpected exception here represents a bug, not a business failure — the client doesn't need to know which, but the log has to, so it's never serialized to strangers.</li>
                 </ul>
-                <p>The one deliberate exception to "domain errors never know about HTTP": auth guards — session and CSRF checks — raise a framework exception directly. They already live in presentation-layer code, so routing them through a domain type first would just be indirection for its own sake.</p>
+                <p>Auth guards — session and CSRF checks — raise a framework exception directly, which looks like an exception to "domain errors never know about HTTP" but isn't really one. The rule was never "never use HTTP exceptions" — it's "don't let HTTP exceptions cross into layers that don't know they're handling HTTP." A CSRF check is inherently an HTTP/web-security concern; it already lives in presentation-layer code, so routing it through a domain type first would just be indirection for its own sake. <code>OrderNotFoundError</code> raised from inside <code>OrderService.get_order()</code> is a different situation entirely — that's a business layer that has no business knowing HTTP exists.</p>
 
                 <h3>What it buys the call sites</h3>
                 <p>A route handler reads like a table of contents — validate input, call the service, shape the response — with no try/except anywhere:</p>
