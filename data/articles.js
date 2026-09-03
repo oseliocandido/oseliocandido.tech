@@ -96,10 +96,10 @@ window.ARTICLES = [
     },
     {
         slug: 'asset-bundle-environment-promotion',
-        title: 'One Workspace, Three Environments: Isolating Databricks Deployments Without Physical Separation',
-        desc: 'Dev, integration, and production share one Databricks workspace — per-tier Terraform state, pause status, and permission templating do the isolation that separate infrastructure would otherwise provide.',
+        title: 'One Workspace, Many Environments: Isolating Databricks Deployments Without Physical Separation',
+        desc: 'Eight deployment tiers share one Databricks workspace — per-tier Terraform state, pause status, and permission templating do the isolation that separate infrastructure would otherwise provide.',
         date: '2025-11-03',
-        readTime: 12,
+        readTime: 13,
         discipline: 'devops',
         tags: ['ci-cd', 'databricks'],
         status: 'published',

@@ -3,18 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>One Workspace, Three Environments — Oselio Candido</title>
-    <meta name="description" content="How a Databricks Asset Bundle isolates dev, integration, and production in one shared workspace — per-tier state, pause status, templated permissions.">
+    <title>One Workspace, Many Environments — Oselio Candido</title>
+    <meta name="description" content="How a Databricks Asset Bundle isolates eight deployment tiers in one shared workspace — per-tier Terraform state, pause status, templated permissions.">
     <link rel="canonical" href="https://oseliocandido.tech/blog/articles/asset-bundle-environment-promotion/">
     <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Oselio Candido">
-    <meta property="og:title" content="One Workspace, Three Environments — Oselio Candido">
-    <meta property="og:description" content="How a Databricks Asset Bundle isolates dev, integration, and production in one shared workspace — per-tier state, pause status, templated permissions.">
+    <meta property="og:title" content="One Workspace, Many Environments — Oselio Candido">
+    <meta property="og:description" content="How a Databricks Asset Bundle isolates eight deployment tiers in one shared workspace — per-tier Terraform state, pause status, templated permissions.">
     <meta property="og:url" content="https://oseliocandido.tech/blog/articles/asset-bundle-environment-promotion/">
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="One Workspace, Three Environments — Oselio Candido">
-    <meta name="twitter:description" content="How a Databricks Asset Bundle isolates dev, integration, and production in one shared workspace — per-tier state, pause status, templated permissions.">
+    <meta name="twitter:title" content="One Workspace, Many Environments — Oselio Candido">
+    <meta name="twitter:description" content="How a Databricks Asset Bundle isolates eight deployment tiers in one shared workspace — per-tier Terraform state, pause status, templated permissions.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -44,13 +44,13 @@
             <div class="article-page__header">
                 <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
                 <span class="article-page__tag">CI/CD</span>
-                <h1 class="article-page__title">One Workspace, Three Environments: Isolating Databricks Deployments Without Physical Separation</h1>
+                <h1 class="article-page__title">One Workspace, Many Environments: Isolating Databricks Deployments Without Physical Separation</h1>
                 <div class="article-page__meta">
                     <span>Oselio Candido</span>
                     <span>·</span>
                     <span>Nov 3, 2025</span>
                     <span>·</span>
-                    <span>12 min read</span>
+                    <span>13 min read</span>
                 </div>
             </div>
 
@@ -69,7 +69,7 @@
                 <h2>The Problem</h2>
 
                 <p>
-                    Infrastructure provisioning put dev, integration, and production on the same Databricks workspace — there was no per-environment workspace to lean on for isolation. That constraint pushes a problem down into the deployment tooling that would otherwise be solved by infrastructure: if three environments share one workspace, a bundle deploy needs its own way to keep them from colliding — separate Terraform state per environment inside that single workspace, separate schedule behavior, separate permissions — all resolved from configuration rather than from three physically distinct workspaces.
+                    Infrastructure provisioning put dev, integration, and production on the same Databricks workspace — there was no per-environment workspace to lean on for isolation. That constraint pushes a problem down into the deployment tooling that would otherwise be solved by infrastructure: if several environments share one workspace — eight deployment tiers in this case once every branch and stage combination is counted, not just the three broad lifecycle stages — a bundle deploy needs its own way to keep them from colliding — separate Terraform state per environment inside that single workspace, separate schedule behavior, separate permissions — all resolved from configuration rather than from physically distinct workspaces.
                 </p>
 
                 <p>
@@ -194,7 +194,7 @@ export BUNDLE_VAR_jobs_permission_level=$JOBS_PERMISSION_LEVEL</code></pre>
                 <h3>Schedule State as a Deliberate Safety Boundary</h3>
 
                 <p>
-                    Every scheduled job in the bundle sets its <code>pause_status</code> from the same variable, and the target-level presets set the same thing at the trigger level:
+                    Every scheduled job in the bundle sets its <code>pause_status</code> from the same variable, and the target-level presets set the same thing at the trigger level — two places setting the same value from the same source rather than one place with the other left to default, so the two can't drift apart even if they were ever resolved differently:
                 </p>
 
 <pre><code class="language-yaml">schedule:
@@ -204,13 +204,11 @@ export BUNDLE_VAR_jobs_permission_level=$JOBS_PERMISSION_LEVEL</code></pre>
 
 targets:
   TST:
-    mode: production
     default: true
     presets:
       name_prefix: "[${var.gitlab_deployment_tier}] "
       trigger_pause_status: ${var.jobs_schedule_status}
   PRD:
-    mode: production
     presets:
       name_prefix: "[${var.gitlab_deployment_tier}] "
       trigger_pause_status: ${var.jobs_schedule_status}</code></pre>
@@ -256,7 +254,7 @@ targets:
                 <h3>Isolating Deploys Inside One Shared Workspace</h3>
 
                 <p>
-                    With no per-environment workspace, the Terraform state backing each bundle deploy became the actual isolation boundary. Every previously-hardcoded value became a variable lookup instead: the workspace deploy path became a variable with a distinct state path derived from the deployment tier and the deploy target, so each tier's Terraform state lives at its own path inside the shared workspace instead of overwriting a neighbor's. Cluster assignment became a lookup block that resolves a cluster's Databricks-assigned ID from its name at deploy time:
+                    With no per-environment workspace, the Terraform state backing each bundle deploy became the actual isolation boundary — worth being precise about what that does and doesn't isolate: it's deployment-state isolation, keeping each tier's state, schedule, and permissions from colliding inside the shared workspace, not the security or blast-radius isolation a genuinely separate workspace would give. Compute, networking, the metastore, and the workspace's administrative surface are still shared across every tier. Every previously-hardcoded value became a variable lookup instead: the workspace deploy path became a variable with a distinct state path derived from the deployment tier and the deploy target, so each tier's Terraform state lives at its own path inside the shared workspace instead of overwriting a neighbor's. Cluster assignment became a lookup block that resolves a cluster's Databricks-assigned ID from its name at deploy time:
                 </p>
 
 <pre><code class="language-yaml">variables:
@@ -268,7 +266,11 @@ targets:
     description: Name of the cluster to be used (cluster-a, cluster-b, cluster-c)</code></pre>
 
                 <p>
-                    And the job's environment parameter became a composition of the deployment tier and the environment stage — the exact same expression the workspace state path uses, so a notebook reading its own <code>environment</code> parameter and a bundle deploy resolving its own state path are guaranteed to agree, because they're built from the same two variables instead of two independently-maintained strings. That last point is the caveat worth keeping in mind with this whole approach: it only works because the state path and the job parameter are derived from the same variables rather than two separately-typed strings that happen to look alike today. The original bug was exactly that kind of drift — a hardcoded default that used to match the real environment string and quietly stopped matching once a second tier started deploying. Deriving both from the same source doesn't just fix the symptom, it removes the class of bug.
+                    That lookup trades a hardcoded, opaque cluster ID for a human-readable name, but the name itself becomes part of the deployment contract: rename or delete <code>cluster-a</code> outside the bundle and the next deploy fails to resolve it rather than silently falling back to some other cluster. That's the right failure mode — loud and at deploy time — but it does mean the cluster name is no longer just a label; it's a value this bundle now depends on existing exactly as spelled.
+                </p>
+
+                <p>
+                    And the job's environment parameter became a composition of the deployment tier and the environment stage — the exact same expression the workspace state path uses, so a notebook reading its own <code>environment</code> parameter and a bundle deploy resolving its own state path are deterministically derived from the same two variables instead of two independently-maintained strings that happen to match today. That doesn't guarantee the CI variables themselves are correct — it guarantees that if they are, both values agree, and if they aren't, both are wrong together instead of one silently drifting from the other. That's the caveat worth keeping in mind with this whole approach: it only works because the state path and the job parameter are derived from the same variables rather than two separately-maintained strings that happen to look alike today. The original bug was exactly that kind of drift — a hardcoded default that used to match the real environment string and quietly stopped matching once a second tier started deploying. Deriving both from the same source doesn't just fix the symptom, it removes the class of bug.
                 </p>
 
                 <h2>The Outcome</h2>
