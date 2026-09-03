@@ -3,18 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Making Alembic Work on Unity Catalog — Oselio Candido</title>
-    <meta name="description" content="The real pain point wasn't version control — it was recreating identical schema objects across workspaces. Getting Alembic to work against Unity Catalog.">
+    <title>Making Alembic Work with Unity Catalog — Oselio Candido</title>
+    <meta name="description" content="Alembic can migrate Unity Catalog tables, but a SQLAlchemy model doesn't mean the same thing there that it means in Postgres. Reconciling a relational migration tool with a lakehouse's schema and constraint semantics.">
     <link rel="canonical" href="https://oseliocandido.tech/blog/articles/alembic-against-unity-catalog/">
     <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Oselio Candido">
-    <meta property="og:title" content="Making Alembic Work on Unity Catalog — Oselio Candido">
-    <meta property="og:description" content="The real pain point wasn't version control — it was recreating identical schema objects across workspaces. Getting Alembic to work against Unity Catalog.">
+    <meta property="og:title" content="Making Alembic Work with Unity Catalog — Oselio Candido">
+    <meta property="og:description" content="Alembic can migrate Unity Catalog tables, but a SQLAlchemy model doesn't mean the same thing there that it means in Postgres. Reconciling a relational migration tool with a lakehouse's schema and constraint semantics.">
     <meta property="og:url" content="https://oseliocandido.tech/blog/articles/alembic-against-unity-catalog/">
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="Making Alembic Work on Unity Catalog — Oselio Candido">
-    <meta name="twitter:description" content="The real pain point wasn't version control — it was recreating identical schema objects across workspaces. Getting Alembic to work against Unity Catalog.">
+    <meta name="twitter:title" content="Making Alembic Work with Unity Catalog — Oselio Candido">
+    <meta name="twitter:description" content="Alembic can migrate Unity Catalog tables, but a SQLAlchemy model doesn't mean the same thing there that it means in Postgres. Reconciling a relational migration tool with a lakehouse's schema and constraint semantics.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -44,13 +44,13 @@
             <div class="article-page__header">
                 <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
                 <span class="article-page__tag">Data Platform</span>
-                <h1 class="article-page__title">Alembic Against a Lakehouse: Making Schema Migrations Work on Unity Catalog</h1>
+                <h1 class="article-page__title">Alembic Against a Lakehouse: Making Schema Migrations Work with Unity Catalog</h1>
                 <div class="article-page__meta">
                     <span>Oselio Candido</span>
                     <span>·</span>
                     <span>Sep 2, 2026</span>
                     <span>·</span>
-                    <span>11 min read</span>
+                    <span>15 min read</span>
                 </div>
             </div>
 
@@ -59,12 +59,66 @@
                 <h2>Background: What a Migration Actually Is</h2>
 
                 <p>
-                    A migration is a versioned, ordered, reversible change to a schema — one file that says exactly how to get a database from state N to state N+1, and, ideally, back again. Instead of "someone ran an <code>ALTER TABLE</code> by hand in July and nobody wrote it down," a migration tool keeps every schema change as code: reviewed like any other pull request, applied in a known sequence, and re-runnable against any environment that needs to reach the same state. Alembic is the migration tool for the SQLAlchemy ecosystem, and on a traditional relational database — Postgres is the common case — its job is well-worn: diff your Python model classes against the live database, generate the DDL that reconciles the difference, and track which migration a given database is currently at via a small bookkeeping table it manages itself, conventionally named <code>alembic_version</code>. I've written about that traditional case already: <a href="../alembic-migrations/">Alembic against Postgres</a>, tracking schema history for a FastAPI service, is the straightforward version of this story.
+                    A migration is a versioned, ordered, reversible change to a schema — one file that says exactly how to get a database from state N to state N+1, and, ideally, back again. Instead of "someone ran an <code>ALTER TABLE</code> by hand in July and nobody wrote it down," a migration tool keeps every schema change as code: reviewed like any other pull request, applied in a known sequence, and re-runnable against any environment that needs to reach the same state. Alembic is the migration framework itself — it owns the versioned chain of migration files, the <code>upgrade</code>/<code>downgrade</code> execution, and the bookkeeping table that tracks which migration a database is currently at, conventionally named <code>alembic_version</code>. Diffing your Python model classes against the live database to draft that migration for you is a separate piece, <code>autogenerate</code> — a convenience Alembic ships, not what Alembic fundamentally is. That distinction matters more here than it does on a traditional relational database, because it's specifically autogenerate's diff logic, not Alembic's migration machinery, that turns out to carry assumptions a lakehouse doesn't satisfy. I've written about the traditional case already: <a href="../alembic-migrations/">Alembic against Postgres</a>, tracking schema history for a FastAPI service, is the straightforward version of this story.
                 </p>
 
                 <p>
-                    None of that tooling assumed a lakehouse would ever be the target. Alembic talks to a database through SQLAlchemy's dialect abstraction — a layer that translates generic schema operations into the specific SQL a given engine understands — and until relatively recently there was no dialect that let SQLAlchemy, and therefore Alembic, speak to Databricks at all. Databricks' own answer to that gap is <a href="https://github.com/databricks/databricks-sqlalchemy" target="_blank" rel="noopener">databricks-sqlalchemy</a>, the official dialect that lets SQLAlchemy issue queries and DDL against Delta tables through Unity Catalog. It's what makes pointing Alembic at a lakehouse possible in the first place, rather than a resourceful workaround. It does not, on its own, make Alembic's deeper assumptions about what "a database" guarantees suddenly true for Unity Catalog — that gap is what this article is actually about.
+                    None of that tooling assumed a lakehouse would ever be the target. Alembic talks to a database through SQLAlchemy's dialect abstraction — a layer that translates generic schema operations into the specific SQL a given engine understands — and until relatively recently there was no dialect that let SQLAlchemy, and therefore Alembic, speak to Databricks at all. Databricks' own answer to that gap is <a href="https://github.com/databricks/databricks-sqlalchemy" target="_blank" rel="noopener">databricks-sqlalchemy</a>, the official dialect that lets SQLAlchemy issue queries and DDL against Delta tables through Unity Catalog. It's what makes pointing Alembic at a lakehouse possible in the first place, rather than a resourceful workaround. It does not, on its own, make Alembic's deeper assumptions about what "a database" guarantees suddenly true for Unity Catalog.
                 </p>
+
+                <p>
+                    That's the actual subject of this article, and it's worth stating as plainly as the problem itself:
+                </p>
+
+                <blockquote>
+                    You are not really "making Alembic work with Databricks." You are reconciling a relational schema-migration tool with a lakehouse whose schema and constraint semantics are different.
+                </blockquote>
+
+                <p>
+                    The dialect solves the transport problem — SQLAlchemy can now speak SQL that Databricks understands. It doesn't solve the semantic problem — whether a construct that means one thing in a SQLAlchemy model still means the same thing once it lands in Unity Catalog. A quick side-by-side makes the gap concrete before getting into how it actually surfaced:
+                </p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Concept</th>
+                            <th>PostgreSQL</th>
+                            <th>Unity Catalog</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Primary key</td>
+                            <td>Enforced</td>
+                            <td>Informational</td>
+                        </tr>
+                        <tr>
+                            <td><code>NOT NULL</code> from PK</td>
+                            <td>Implied</td>
+                            <td>Not implied by an informational PK</td>
+                        </tr>
+                        <tr>
+                            <td>Namespace</td>
+                            <td><code>schema.table</code></td>
+                            <td><code>catalog.schema.table</code></td>
+                        </tr>
+                        <tr>
+                            <td>Schema migration state</td>
+                            <td><code>alembic_version</code>, created automatically</td>
+                            <td>Must be bootstrapped and managed explicitly</td>
+                        </tr>
+                        <tr>
+                            <td>SQLAlchemy dialect</td>
+                            <td>Mature relational mapping</td>
+                            <td>Databricks-specific dialect, gaps expected</td>
+                        </tr>
+                        <tr>
+                            <td>Autogenerate</td>
+                            <td>Relatively predictable</td>
+                            <td>Must be validated against actual catalog behavior</td>
+                        </tr>
+                    </tbody>
+                </table>
 
                 <h2>Why This Was Worth Doing</h2>
 
@@ -106,13 +160,17 @@
                 </p>
 
                 <p>
-                    That single failure pointed at a bigger mismatch. Alembic's autogenerate logic — and SQLAlchemy's <code>PrimaryKeyConstraint</code> underneath it — encodes an assumption specific to systems like Postgres: a primary key column is, definitionally, <code>NOT NULL</code> and enforced by the engine. Unity Catalog's primary key constraints are informational. They document intent — this is the natural key, this is what a merge should match on — but the platform doesn't reject a null value or a duplicate at write time. Treating a Unity Catalog "primary key" as if it carried the same enforcement guarantee as a Postgres one was the root cause, not a one-off column problem.
+                    That single failure pointed at a bigger mismatch. Autogenerate's diff logic — and SQLAlchemy's <code>PrimaryKeyConstraint</code> underneath it — encodes an assumption specific to systems like Postgres: a primary key column is, definitionally, <code>NOT NULL</code> and enforced by the engine. Unity Catalog's primary key constraints are informational. They document intent — this is the natural key, this is what a merge should match on — but the platform doesn't reject a null value or a duplicate at write time. Treating a Unity Catalog "primary key" as if it carried the same enforcement guarantee as a Postgres one was the root cause, not a one-off column problem.
+                </p>
+
+                <p>
+                    It's worth being precise about what kind of bug this actually was, because it's easy to file it under "Databricks doesn't support X" and move on. Alembic did exactly what it was told: it generated a migration that correctly described a table with a primary key, and applied it without error. The <em>migration</em> was correct. What was wrong was the assumption baked into the model that a declared primary key also bought <em>data integrity enforcement</em> — that Unity Catalog would reject the bad write the way Postgres would have. Schema migration correctness and data integrity enforcement are two different guarantees, and Postgres happens to bundle them together tightly enough that it's easy to stop noticing they're separate. Unity Catalog unbundles them: it will faithfully persist a schema that describes a primary key, and it will just as faithfully let you write a null into it. That's the semantic impedance this whole article is really about — not a missing feature, but a tool built on one set of guarantees pointed at a platform that only provides a subset of them.
                 </p>
 
                 <h2>Where Else "Database" Stopped Being a Safe Assumption</h2>
 
                 <p>
-                    Once the nullability issue was understood, three more places where Alembic's Postgres-shaped assumptions didn't transfer showed up in quick succession:
+                    Once the nullability issue was understood, two more places where Alembic's Postgres-shaped assumptions didn't transfer showed up in quick succession — both genuine Unity Catalog mismatches, unlike a third issue that surfaced around the same time but turned out to be unrelated to the lakehouse at all:
                 </p>
 
                 <ul>
@@ -122,10 +180,11 @@
                     <li>
                         <strong>Where Alembic runs from.</strong> Alembic expects to import your models the way any Python package does — a normal <code>sys.path</code>. Running inside a Databricks job, the source tree wasn't installed as a package; it lived in a workspace path that Python's import machinery didn't know about. The first fix was a hardcoded <code>sys.path.append(...)</code> straight into <code>env.py</code>, pointing at a specific user's workspace folder — it worked on one machine and broke the moment anyone else tried to run it. The durable fix was resolving the source path relative to the repo root at runtime instead of hardcoding an absolute one, so <code>env.py</code> worked identically for any user or job cluster that checked out the same repo.
                     </li>
-                    <li>
-                        <strong>Config validation drift.</strong> A config model gating which tables were eligible for migration relied on Pydantic's v1 behavior for a field with <code>default=None</code> — under v1, an explicitly-passed <code>None</code> and an omitted field were indistinguishable, and the validation logic depended on that. Pydantic v2 tightened this. A field that used to silently accept "not provided" started rejecting configs that had always worked, and the fix was making the "not provided" case explicit instead of relying on a default value to paper over it.
-                    </li>
                 </ul>
+
+                <p>
+                    A third problem showed up in the same stretch of work and is easy to lump in with the other two, but it isn't actually about Unity Catalog: a config model gating which tables were eligible for migration relied on Pydantic v1's behavior for a field with <code>default=None</code>, where an explicitly-passed <code>None</code> and an omitted field were indistinguishable. Pydantic v2 tightened this, and a field that used to silently accept "not provided" started rejecting configs that had always worked. Worth flagging separately: this was a migration-tooling dependency bump biting an unrelated assumption, not a lakehouse semantic gap — it would have broken identically against Postgres. Fixed the same way regardless: make the "not provided" case explicit instead of relying on a default value to paper over it.
+                </p>
 
                 <div class="flow-diagram">
                     <div class="flow-diagram__node">SQLAlchemy MetaData<small>one namespace concept</small></div>
@@ -191,6 +250,10 @@
     return MetaData(schema=f"{catalog}.{schema}")</code></pre>
 
                 <p>
+                    Worth flagging honestly rather than glossing over: this leans on SQLAlchemy's <code>schema</code> parameter accepting a single string, which the Databricks dialect happens to parse as <code>catalog.schema</code>. That isn't a documented part of SQLAlchemy's core metadata model — <code>MetaData.schema</code> is fundamentally designed as one schema identifier, not a namespace path — so folding a three-level concept into it is a dialect-specific accommodation, not a general SQLAlchemy pattern. It's exactly the sort of thing worth re-verifying against the dialect's own behavior before depending on it in a new project, rather than assuming it generalizes to other multi-level-namespace databases.
+                </p>
+
+                <p>
                     And the <code>sys.path</code> hack was replaced with a path resolved relative to the repository root inside <code>env.py</code>, computed once at import time rather than hardcoded per developer:
                 </p>
 
@@ -208,7 +271,7 @@ sys.path.insert(0, str(REPO_ROOT / "src"))</code></pre>
                 <h2>The First Real Migration, and the Table Alembic Didn't Know Existed</h2>
 
                 <p>
-                    The very first time this ran against a target environment, Alembic looked for its own bookkeeping table — <code>alembic_version</code>, the single row that tracks which migration a database is currently at — and didn't find one, because nothing had ever run Alembic against that catalog before. Creating it explicitly, once, as its own migration, was the unglamorous but necessary first step before any table-level migration could be trusted to run in the right order on a fresh environment:
+                    The very first time this ran against a target environment, Alembic looked for its own bookkeeping table — <code>alembic_version</code>, the single row that tracks which migration a database is currently at — and didn't find one, because nothing had ever run Alembic against that catalog before. On Postgres this is a non-event: Alembic creates the table itself, silently, the first time it needs it. Unity Catalog's connection and permission model for DDL is stricter about what gets created implicitly versus explicitly, and letting Alembic create its own bookkeeping table as an implicit side effect of the first migration made that first run behave differently from every run after it — a special case exactly where a migration tool is supposed to guarantee there isn't one. Bootstrapping <code>alembic_version</code> explicitly, as its own tracked migration, meant the very first migration against a brand-new catalog looked identical to the thousandth: no implicit table creation, no first-run special case, just the same "check the version, apply what's pending" logic every other migration goes through.
                 </p>
 
 <pre><code class="language-sql">CREATE TABLE IF NOT EXISTS analytics_prd.core_serving.alembic_version (
@@ -238,6 +301,22 @@ sys.path.insert(0, str(REPO_ROOT / "src"))</code></pre>
 
                 <p>
                     Each of those, left uncorrected, was individually capable of producing a migration that looked correct and wasn't — and a migration that looks correct and isn't is exactly what turns "recreate this schema somewhere new" back into a manual, error-prone exercise. Closing each gap is what migrations-as-code exists to prevent in the first place.
+                </p>
+
+                <p>
+                    But the headline isn't "we got Alembic working." It's narrower and more useful than that:
+                </p>
+
+                <blockquote>
+                    Migration tooling is only as correct as the semantic assumptions between the model, the dialect, and the target database.
+                    <br><br>
+                    Alembic doesn't know that a Unity Catalog primary key is informational. SQLAlchemy doesn't know that a three-level namespace isn't its traditional two-level schema model. The dialect can translate SQL, but translation is not semantic equivalence.
+                    <br><br>
+                    Once you recognize that boundary, the solution isn't to abandon migrations. It's to make the model explicitly represent the guarantees the target platform actually provides.
+                </blockquote>
+
+                <p>
+                    That's the same lesson as the <a href="../modular-etl-notebook-refactor/">ETL folder-per-entity refactor</a>, arrived at from a completely different angle: in both cases, the abstraction boundary in place — pipeline layer as the unit of code organization, Postgres semantics as the unit of "what a database guarantees" — was drawn in the wrong place, and the fix was making the real unit of responsibility explicit instead of assumed.
                 </p>
 
             </article>

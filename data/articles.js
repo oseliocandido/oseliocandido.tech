@@ -31,10 +31,10 @@ window.ARTICLES = [
     },
     {
         slug: 'alembic-against-unity-catalog',
-        title: 'Alembic Against a Lakehouse: Making Schema Migrations Work on Unity Catalog',
+        title: 'Alembic Against a Lakehouse: Making Schema Migrations Work with Unity Catalog',
         desc: 'Version control and audit trail are the obvious wins. The real pain point was recreating identical schema objects across workspaces without a folder of DDL notebooks — what it took to get there with Alembic against Unity Catalog.',
         date: '2026-09-02',
-        readTime: 11,
+        readTime: 15,
         discipline: 'data-engineering',
         tags: ['alembic', 'databricks', 'migrations'],
         status: 'published',
