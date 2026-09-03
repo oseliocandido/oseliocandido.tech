@@ -233,7 +233,7 @@ window.ARTICLES = [
         title: 'Connection Pools in Async FastAPI: Sizing asyncpg + SQLAlchemy for a Real Product',
         desc: 'Pool size, overflow, and session-per-request in an async stack — what breaks under load, what the defaults hide, and the numbers that actually mattered in production.',
         date: '2026-07-15',
-        readTime: 8,
+        readTime: 9,
         discipline: 'backend',
         tags: ['fastapi', 'postgres'],
         status: 'published',
