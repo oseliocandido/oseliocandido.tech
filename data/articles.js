@@ -77,7 +77,7 @@ window.ARTICLES = [
         title: 'Excel to Databricks: Building a Metadata-Driven Ingestion Framework',
         desc: 'Filling a Databricks platform gap: building exact-once Excel ingestion with configurable load strategies.',
         date: '2026-06-30',
-        readTime: 12,
+        readTime: 13,
         discipline: 'data-engineering',
         tags: ['databricks'],
         status: 'published',
