@@ -2,11 +2,11 @@
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
     <loc>https://oseliocandido.tech/</loc>
-    <lastmod>2026-09-02</lastmod>
+    <lastmod>2026-09-03</lastmod>
   </url>
   <url>
     <loc>https://oseliocandido.tech/blog/</loc>
-    <lastmod>2026-09-02</lastmod>
+    <lastmod>2026-09-03</lastmod>
   </url>
   <url>
     <loc>https://oseliocandido.tech/blog/articles/modular-etl-notebook-refactor/</loc>
@@ -50,7 +50,7 @@
   </url>
   <url>
     <loc>https://oseliocandido.tech/blog/articles/mfa-totp-rfc6238/</loc>
-    <lastmod>2026-07-15</lastmod>
+    <lastmod>2026-09-02</lastmod>
   </url>
   <url>
     <loc>https://oseliocandido.tech/blog/articles/tanstack-query-caching/</loc>

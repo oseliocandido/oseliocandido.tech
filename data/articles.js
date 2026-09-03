@@ -142,10 +142,10 @@ window.ARTICLES = [
     /* ── From the ERP / SaaS build ─────────────────────────── */
     {
         slug: 'mfa-totp-rfc6238',
-        title: 'MFA and TOTP: How Your Authenticator App Actually Works',
-        desc: 'Something you know, something you have — and the RFC 6238 math that lets Google Authenticator and my server agree on a 6-digit code without ever talking to each other.',
-        date: '2026-07-15',
-        readTime: 9,
+        title: 'Adding TOTP-Based MFA Without Making Login Miserable',
+        desc: 'Choosing TOTP over SMS, push, and passkeys; modeling login as an explicit state machine; trusted-device bearer tokens; and the enrollment, rate-limiting, and recovery details that make or break an MFA implementation.',
+        date: '2026-09-02',
+        readTime: 12,
         discipline: 'backend',
         tags: ['auth', 'security'],
         status: 'published',

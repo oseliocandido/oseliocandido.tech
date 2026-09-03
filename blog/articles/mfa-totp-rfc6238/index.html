@@ -3,18 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MFA and TOTP: How Authenticator Apps Work — Oselio Candido</title>
-    <meta name="description" content="Auth factors, the RFC 6238 math behind 6-digit codes, and how TOTP with trusted devices is implemented in a production FastAPI SaaS.">
+    <title>Adding TOTP-Based MFA Without Making Login Miserable — Oselio Candido</title>
+    <meta name="description" content="Choosing TOTP over SMS, push, and passkeys; modeling login as an explicit state machine; trusted-device bearer tokens; and the enrollment, rate-limiting, and recovery details that make or break an MFA implementation.">
     <link rel="canonical" href="https://oseliocandido.tech/blog/articles/mfa-totp-rfc6238/">
     <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Oselio Candido">
-    <meta property="og:title" content="MFA and TOTP: How Authenticator Apps Work — Oselio Candido">
-    <meta property="og:description" content="Auth factors, the RFC 6238 math behind 6-digit codes, and how TOTP with trusted devices is implemented in a production FastAPI SaaS.">
+    <meta property="og:title" content="Adding TOTP-Based MFA Without Making Login Miserable — Oselio Candido">
+    <meta property="og:description" content="Choosing TOTP over SMS, push, and passkeys; modeling login as an explicit state machine; trusted-device bearer tokens; and the enrollment, rate-limiting, and recovery details that make or break an MFA implementation.">
     <meta property="og:url" content="https://oseliocandido.tech/blog/articles/mfa-totp-rfc6238/">
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="MFA and TOTP: How Authenticator Apps Work — Oselio Candido">
-    <meta name="twitter:description" content="Auth factors, the RFC 6238 math behind 6-digit codes, and how TOTP with trusted devices is implemented in a production FastAPI SaaS.">
+    <meta name="twitter:title" content="Adding TOTP-Based MFA Without Making Login Miserable — Oselio Candido">
+    <meta name="twitter:description" content="Choosing TOTP over SMS, push, and passkeys; modeling login as an explicit state machine; trusted-device bearer tokens; and the enrollment, rate-limiting, and recovery details that make or break an MFA implementation.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -47,89 +47,520 @@
             <div class="article-page__header">
                 <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
                 <span class="article-page__tag">Backend Engineering</span>
-                <h1 class="article-page__title">MFA and TOTP: How Your Authenticator App Actually Works</h1>
+                <h1 class="article-page__title">Adding TOTP-Based MFA Without Making Login Miserable</h1>
                 <div class="article-page__meta">
                     <span>Oselio Candido</span>
                     <span>·</span>
-                    <span>Jul 2026</span>
+                    <span>Sep 2, 2026</span>
                     <span>·</span>
-                    <span>9 min read</span>
+                    <span>12 min read</span>
                 </div>
             </div>
 
             <article class="article-page__body">
 
                 <h2>The problem</h2>
-                <p>A password is a single point of failure. It can be stolen through phishing, reused from another breached service, or simply guessed. For applications handling customer data, relying on a password alone is no longer enough. Multi-factor authentication solves that problem, but different MFA methods offer very different trade-offs in security, user experience, and implementation.</p>
+
+                <p>
+                    A password is a single point of failure.
+                </p>
+
+                <p>
+                    It can be stolen through phishing, reused from another breached service, or guessed through credential stuffing. MFA doesn't make passwords disappear, but it means that compromising the password alone is no longer sufficient to authenticate.
+                </p>
+
+                <p>
+                    The interesting part isn't generating a six-digit code. That's a solved problem.
+                </p>
+
+                <p>
+                    The real engineering challenge is everything around it: choosing the right second factor, provisioning it safely, designing the login flow, handling partially completed enrollment, and reducing the friction of asking users for another credential on every login.
+                </p>
+
+                <p>
+                    For this application, I chose <strong>TOTP — Time-based One-Time Passwords</strong>.
+                </p>
 
                 <h2>What MFA actually is</h2>
-                <p>Authentication is proving who you are. Every proof falls into one of three factor categories:</p>
-                <ul>
-                    <li><strong>Something you know</strong> — a password, a PIN.</li>
-                    <li><strong>Something you have</strong> — a phone, a hardware key, a device that holds a secret.</li>
-                    <li><strong>Something you are</strong> — a fingerprint, a face.</li>
-                </ul>
-                <p>Multi-factor authentication means requiring proofs from <em>different</em> categories. A password plus a security question is not MFA — both are things you know, and both leak the same way (phishing, database dumps, sticky notes). A password plus a one-time code from a device the attacker doesn't have is MFA: stealing the password is no longer enough on its own.</p>
 
-                <h2>The alternatives</h2>
-                <p>"Something you have" can mean several different things in practice:</p>
+                <p>
+                    Authentication factors are commonly grouped into three categories:
+                </p>
+
                 <ul>
-                    <li><strong>SMS codes</strong> — simple for users, but vulnerable to SIM-swapping and dependent on a carrier network the app doesn't control.</li>
-                    <li><strong>Push-based approval</strong> (tap "yes" in an app) — smooth UX, but it ties you to a proprietary vendor and infrastructure.</li>
-                    <li><strong>Hardware keys / passkeys (WebAuthn)</strong> — the strongest option against phishing, but a heavier lift for users who'd need to own and carry a physical key or set up platform biometrics.</li>
-                    <li><strong>TOTP (Time-based One-Time Password)</strong> — a code generated locally on a device, no network round-trip, no vendor lock-in.</li>
+                    <li><strong>Something you know</strong> — a password or PIN.</li>
+                    <li><strong>Something you have</strong> — a phone, authenticator, security key, or other device containing an authenticator secret.</li>
+                    <li><strong>Something you are</strong> — a fingerprint, face, or other biometric characteristic.</li>
                 </ul>
-                <p>Digging into TOTP, the detail that settled it was that it isn't a proprietary scheme — it's an open standard, <a href="https://datatracker.ietf.org/doc/html/rfc6238" target="_blank" rel="noopener noreferrer">RFC 6238</a>, already implemented by every mainstream authenticator app. Users don't need to install anything specific to this product; whatever authenticator app they already trust just works.</p>
+
+                <p>
+                    MFA means combining factors from different categories.
+                </p>
+
+                <p>
+                    A password plus a security question isn't really meaningful MFA: both are knowledge-based secrets and can be exposed through similar attacks. A password plus a code generated by an authenticator app is different: compromising the password doesn't give an attacker the second factor.
+                </p>
+
+                <p>
+                    That distinction is important because not all MFA methods provide the same protection.
+                </p>
+
+                <h2>Choosing the second factor</h2>
+
+                <p>
+                    "Something you have" leaves several implementation choices:
+                </p>
+
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Method</th>
+                            <th>Advantages</th>
+                            <th>Trade-offs</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>SMS codes</td>
+                            <td>Familiar, simple UX</td>
+                            <td>SIM swapping, carrier dependency, phishing</td>
+                        </tr>
+                        <tr>
+                            <td>Push approval</td>
+                            <td>Very convenient</td>
+                            <td>Requires push infrastructure and can suffer from MFA-fatigue attacks</td>
+                        </tr>
+                        <tr>
+                            <td>Hardware security keys</td>
+                            <td>Excellent phishing resistance</td>
+                            <td>Additional hardware and setup</td>
+                        </tr>
+                        <tr>
+                            <td>Passkeys / WebAuthn</td>
+                            <td>Strong phishing resistance, excellent long-term direction</td>
+                            <td>More involved authentication UX and implementation</td>
+                        </tr>
+                        <tr>
+                            <td>TOTP</td>
+                            <td>Open standard, offline generation, no vendor dependency</td>
+                            <td>Still vulnerable to phishing</td>
+                        </tr>
+                    </tbody>
+                </table>
+
+                <p>
+                    TOTP stood out because it gives a good balance for this particular application.
+                </p>
+
+                <p>
+                    It doesn't require an SMS provider or push-notification infrastructure. It works without network connectivity on the user's authenticator device. And, most importantly, it is standardized rather than tied to a particular vendor.
+                </p>
+
+                <p>
+                    TOTP is specified by <a href="https://datatracker.ietf.org/doc/html/rfc6238" target="_blank" rel="noopener noreferrer">RFC 6238</a>, so users can use the authenticator application they already trust.
+                </p>
+
+                <p>
+                    That last point matters more than it initially sounds.
+                </p>
+
+                <p>
+                    I don't want the application to tell users:
+                </p>
+
+                <blockquote>"Install our authentication app."</blockquote>
+
+                <p>
+                    I want it to say:
+                </p>
+
+                <blockquote>"Use the authenticator app you already have."</blockquote>
 
                 <h2>The decision: TOTP</h2>
-                <p>TOTP won on three counts: it requires no SMS carrier or push-notification vendor to trust, it works offline once enrolled, and — because it's a standard rather than a proprietary protocol — users get to pick their own authenticator app instead of being locked into one.</p>
-                <p>The trick that lets two parties agree on a code without communicating is simple: they share a secret once, during enrollment, and after that they both derive codes independently from the same two inputs — <strong>the secret</strong> and <strong>the current time</strong>, rounded down to a 30-second window. Run the same standard math on the same inputs, and both sides land on the same 6-digit code, without a single byte crossing the network at verification time.</p>
-                <blockquote>The security assumption is exactly one thing: the shared secret never leaves the two parties. The time is public; the algorithm is public; the code is useless after 30 seconds.</blockquote>
-                <p>One practical wrinkle: clocks drift. If a phone's clock is a little behind the server's, it may still be showing the code for the previous time step. The standard accounts for this by accepting a small window of adjacent steps, so a few seconds of drift doesn't lock anyone out.</p>
+
+                <p>
+                    TOTP won for three reasons:
+                </p>
+
+                <ol>
+                    <li>No SMS dependency.</li>
+                    <li>No push-notification infrastructure.</li>
+                    <li>No proprietary authenticator application.</li>
+                </ol>
+
+                <p>
+                    The protocol itself is surprisingly simple.
+                </p>
+
+                <p>
+                    During enrollment, the application and the authenticator establish a shared secret.
+                </p>
+
+                <p>
+                    The authenticator then combines that secret with the current time and runs the standardized TOTP algorithm. The server performs the same calculation independently.
+                </p>
+
+                <p>
+                    Both sides have the same inputs, so they arrive at the same code without the authenticator needing to contact the server every time it generates one.
+                </p>
+
+                <p>
+                    Conceptually:
+                </p>
+
+<pre><code class="language-text">                 Enrollment
+              shared secret
+                    │
+          ┌─────────┴─────────┐
+          │                   │
+       Server            Authenticator
+          │                   │
+          └────── shared ─────┘
+                 secret
+
+
+                 Verification
+
+       Server                         Phone
+         │                              │
+    secret + time                  secret + time
+         │                              │
+       TOTP                           TOTP
+         │                              │
+         └────── same 6-digit code ────┘</code></pre>
+
+                <p>
+                    The time is public. The algorithm is public.
+                </p>
+
+                <p>
+                    The security-sensitive value is the <strong>shared secret</strong>.
+                </p>
+
+                <p>
+                    It therefore needs to be protected like an authentication credential.
+                </p>
+
+                <p>
+                    One important clarification: the secret does cross the boundary during enrollment. The QR code is precisely the mechanism used to transfer that secret to the authenticator. After enrollment, however, the authenticator generates codes locally and doesn't need to communicate with the server to generate each one.
+                </p>
+
+                <h3>The 30-second window</h3>
+
+                <p>
+                    TOTP uses time steps. A common configuration is a 30-second period.
+                </p>
+
+                <p>
+                    That means the displayed code changes periodically rather than remaining valid indefinitely.
+                </p>
+
+                <p>
+                    Clocks aren't perfect, though. A phone may be slightly ahead or behind the server.
+                </p>
+
+                <p>
+                    The verifier therefore normally allows a small window around the current time step to tolerate clock drift and network/user-entry delays.
+                </p>
+
+                <p>
+                    The important point is that the server's clock is authoritative; the client doesn't get to tell the server what time it is.
+                </p>
+
+                <p>
+                    And TOTP has an important limitation: <strong>it is not phishing-resistant</strong>. Because the user manually enters the generated code into a website, a phishing site can relay that code to the real application while it is still valid. NIST explicitly distinguishes OTPs from phishing-resistant authenticators such as WebAuthn.
+                </p>
+
+                <p>
+                    So the decision wasn't "TOTP is the strongest MFA."
+                </p>
+
+                <p>
+                    It was:
+                </p>
+
+                <blockquote>TOTP provides a strong improvement over password-only authentication while keeping the implementation and user experience appropriate for this application.</blockquote>
 
                 <h2>The UX</h2>
-                <p>Implementing the algorithm was the easy part — the harder design questions were about the experience around it. Nobody enjoys typing a 6-digit code under a countdown, and the difference between a second factor people tolerate and one they resent lives entirely in interaction details, not in the math.</p>
 
-                <p>The screen actually changes shape depending on where the user is in that lifecycle, and the two states are worth looking at side by side.</p>
+                <p>
+                    The algorithm was the easy part.
+                </p>
 
-                <p><strong>Enrollment</strong> happens exactly once, the first time a user turns MFA on. The QR code encodes the shared secret, so it has to be there — this is the one moment the secret exists outside the two parties that will need it later. Once the authenticator app has scanned it and the user proves the setup worked with one valid code, the QR code is never shown again for that account; there's nothing left to scan.</p>
+                <p>
+                    The harder question was:
+                </p>
+
+                <p>
+                    <strong>How do you make users perform an additional authentication step without making login annoying?</strong>
+                </p>
+
+                <p>
+                    Nobody enjoys typing a six-digit code while watching it expire.
+                </p>
+
+                <p>
+                    The UX therefore became part of the security design.
+                </p>
+
+                <p>
+                    There are two distinct states: <strong>enrollment</strong> and <strong>verification</strong>.
+                </p>
+
+                <h3>Enrollment</h3>
+
+                <p>
+                    Enrollment happens once, when the user enables MFA.
+                </p>
+
+                <p>
+                    The application generates the TOTP secret and presents it as a QR code. The authenticator app scans the QR code and now has the information required to generate the same codes as the server.
+                </p>
+
+                <p>
+                    But simply displaying the QR code isn't enough.
+                </p>
+
+                <p>
+                    The user has to prove that the enrollment actually worked.
+                </p>
+
+                <p>
+                    The flow is:
+                </p>
+
+<pre><code class="language-text">Enable MFA
+    │
+    ▼
+Generate secret
+    │
+    ▼
+Display QR code
+    │
+    ▼
+Authenticator scans QR
+    │
+    ▼
+User enters generated code
+    │
+    ├── invalid ──► remain in setup
+    │
+    └── valid ───► MFA enrollment complete</code></pre>
+
+                <p>
+                    Only after the first valid code is submitted does the application consider MFA enabled.
+                </p>
+
+                <p>
+                    This distinction matters.
+                </p>
+
+                <p>
+                    If a user scans the QR code, closes the browser, and never verifies the code, the account shouldn't suddenly become dependent on an authenticator that may not actually have been configured.
+                </p>
 
                 <figure>
                     <img src="images/mfa-verify-screen.png" alt="TOTP enrollment screen showing the QR code to scan in an authenticator app, a six-box segmented code input with the active box highlighted, and a 'Confiar neste dispositivo' (trust this device) checkbox above the continue button" loading="lazy">
-                    <figcaption>First-time enrollment: the QR code is only ever shown once, the moment a user turns MFA on.</figcaption>
+                    <figcaption>First-time enrollment: the QR code provisions the authenticator, and the user confirms the setup with one valid code.</figcaption>
                 </figure>
 
-                <p><strong>Verification</strong> is what every login after that looks like — no QR code, because there's nothing left to provision. What's new here instead is the ring next to the input counting down the seconds left in the current code's validity window. That countdown isn't decorative: it's the direct, visible expression of the 30-second time step the RFC 6238 math is built on, and it's what turns "why didn't my code work" into "the ring hit zero, of course it didn't." A user watching the ring learns, without being told, that waiting for the next code is sometimes faster than re-typing the current one.</p>
+                <p>
+                    Once enrollment succeeds, the QR code should not be displayed again as part of normal login. It is provisioning material, not something required to verify an already-enrolled authenticator.
+                </p>
+
+                <h3>Verification</h3>
+
+                <p>
+                    Every subsequent login is simpler.
+                </p>
+
+                <p>
+                    There is no QR code.
+                </p>
+
+                <p>
+                    The user enters the current six-digit code generated by their authenticator.
+                </p>
+
+                <p>
+                    A countdown indicator shows how much time remains in the current TOTP window.
+                </p>
 
                 <figure class="figure--narrow">
                     <img src="images/mfa-verify-recurring.png" alt="TOTP verification screen on a later login: no QR code, just the six-box code input, a 23-second countdown ring next to it, and the trust-this-device checkbox" loading="lazy">
-                    <figcaption>Every login after that: no QR code, just the code input and a live countdown to the next 30-second window.</figcaption>
+                    <figcaption>Every login after enrollment: just the code input and an indication of the current time window.</figcaption>
                 </figure>
 
-                <p>None of that happens by accident — a handful of small, deliberate UX features are doing the work of making a security prompt feel like a two-second formality instead of a chore. Worth calling out explicitly:</p>
-                <ul>
-                    <li><strong>Time-left indicator.</strong> The code is only valid for a 30-second window; showing a visible countdown (rather than letting a code silently expire) is what turns a confusing "invalid code" error into an expected, self-explained state.</li>
-                    <li><strong>Auto-advance between boxes.</strong> Typing a digit in box 1 moves focus to box 2 automatically — the user never touches Tab, and the six boxes read as one field split for legibility, not six separate fields to manage.</li>
-                    <li><strong>Backspace steps back.</strong> Deleting an empty box moves focus to the previous one, so correcting a mistyped digit doesn't require reaching for the mouse.</li>
-                    <li><strong>Autosubmit on the sixth digit.</strong> There's no separate "verify" button to click — filling the last box submits the code immediately. A TOTP code has exactly one valid length; waiting for an explicit submit click is a wasted round trip the UI doesn't need to ask for.</li>
-                    <li><strong>Trust this device.</strong> A checkbox, off by default, that skips the second factor on that same browser for a bounded window (180 days) once checked — a deliberate trade-off between friction and security. A stolen password alone still isn't enough on an untrusted device, but a user isn't punished with a fresh code prompt every time they log in from their own laptop.</li>
-                </ul>
-                <p>None of that is TOTP-specific — it's the same input-ergonomics thinking that goes into a credit-card CVV field or an SMS-code field anywhere else on the web. The algorithm earns you a secure second factor; this list is what earns you one people don't route around.</p>
+                <p>
+                    That countdown isn't merely decorative.
+                </p>
 
-                <h2>Under the hood</h2>
-                <p>Enrollment safety came first: if a user starts setting up their authenticator app and closes the page before finishing, they must never end up locked out of their own account by a half-registered second factor. Enrollment is only considered complete once the user proves the app is working by submitting one valid code — until then, login behaves exactly as it did before MFA was introduced.</p>
-                <p>The second design question was how login communicates its own state. Rather than returning a simple yes/no, it reports what needs to happen next — whether the user still needs to enroll, needs to enter a TOTP code, or is already fully authenticated. That's a finite state machine in disguise: a small, fixed set of states with defined transitions between them, and the login handler is the single place that decides the current one. Every other surface that consumes login just reacts to whichever state it's handed, instead of re-deriving the rules for when a second factor is required. The frontend types make that contract explicit:</p>
-                <pre><code class="language-typescript">export type LoginNextStep = 'TOTP_SETUP_REQUIRED' | 'TOTP_REQUIRED' | 'AUTHENTICATED';
+                <p>
+                    When a user sees that only two seconds remain, they understand why submitting the current code may fail and why waiting for the next code is sometimes the better option.
+                </p>
+
+                <h2>Small UX decisions that matter</h2>
+
+                <p>
+                    Several small interactions make a surprisingly large difference.
+                </p>
+
+                <h3>Time-left indicator</h3>
+
+                <p>
+                    The code has a limited lifetime.
+                </p>
+
+                <p>
+                    Showing the remaining time turns an otherwise confusing expiration into something the user can understand.
+                </p>
+
+                <h3>Auto-advance</h3>
+
+                <p>
+                    Entering a digit automatically moves focus to the next box.
+                </p>
+
+                <p>
+                    The six boxes are visually separate but behave like one input.
+                </p>
+
+                <h3>Backspace moves backward</h3>
+
+                <p>
+                    If the current box is empty and the user presses backspace, focus moves to the previous box.
+                </p>
+
+                <p>
+                    Correcting a typo therefore doesn't require reaching for the mouse.
+                </p>
+
+                <h3>Autosubmit</h3>
+
+                <p>
+                    After the sixth digit is entered, the code is submitted automatically.
+                </p>
+
+                <p>
+                    There is little value in making the user enter exactly six digits and then click another button.
+                </p>
+
+                <h3>Trust this device</h3>
+
+                <p>
+                    This was probably the most important UX decision.
+                </p>
+
+                <p>
+                    If users have to enter a TOTP code every single time they log in, some will eventually perceive MFA as friction rather than protection.
+                </p>
+
+                <p>
+                    The application therefore supports a <strong>trusted-device</strong> option.
+                </p>
+
+                <p>
+                    The user can choose:
+                </p>
+
+                <blockquote>Trust this device</blockquote>
+
+                <p>
+                    Once enabled, the browser can skip the TOTP prompt for a bounded period.
+                </p>
+
+                <p>
+                    In this implementation, that period is 180 days.
+                </p>
+
+                <p>
+                    This isn't the same thing as trusting a device forever. It is a deliberately limited session convenience.
+                </p>
+
+                <p>
+                    A new browser or device still requires MFA.
+                </p>
+
+                <p>
+                    The trade-off becomes:
+                </p>
+
+<pre><code class="language-text">Normal login
+    │
+    ▼
+Password correct
+    │
+    ▼
+Trusted device?
+   / \
+ yes  no
+ │    │
+ ▼    ▼
+Login  TOTP
+       │
+       ▼
+      Login</code></pre>
+
+                <p>
+                    The security boundary therefore moves from:
+                </p>
+
+                <blockquote>"Every login requires TOTP"</blockquote>
+
+                <p>
+                    to:
+                </p>
+
+                <blockquote>"Every new or untrusted device requires TOTP."</blockquote>
+
+                <p>
+                    That is a much more usable policy.
+                </p>
+
+                <h2>Under the hood: model the login as a state machine</h2>
+
+                <p>
+                    The next problem wasn't cryptography.
+                </p>
+
+                <p>
+                    It was the login API.
+                </p>
+
+                <p>
+                    A traditional login endpoint might return something like:
+                </p>
+
+<pre><code class="language-json">{
+  "authenticated": false
+}</code></pre>
+
+                <p>
+                    That isn't enough once authentication becomes a multi-step process.
+                </p>
+
+                <p>
+                    The client needs to know <strong>why</strong> authentication hasn't completed and what it should do next.
+                </p>
+
+                <p>
+                    The login flow therefore exposes an explicit finite set of states:
+                </p>
+
+<pre><code class="language-typescript">export type LoginNextStep =
+  | 'TOTP_SETUP_REQUIRED'
+  | 'TOTP_REQUIRED'
+  | 'AUTHENTICATED';
 
 export interface LoginResponse {
   user_name?: string;
   next_step: LoginNextStep;
-  csrf_token?: string; // present only when next_step === 'AUTHENTICATED'
+  csrf_token?: string;
 }
 
 export interface TOTPVerificationRequest {
   totp_code: string;
-  trust_device?: boolean; // optional: trust this device for N days
+  trust_device?: boolean;
 }
 
 export interface TOTPVerificationResponse {
@@ -137,27 +568,345 @@ export interface TOTPVerificationResponse {
   next_step: 'AUTHENTICATED';
   csrf_token: string;
 }</code></pre>
-                <p>That <code>csrf_token</code> riding along on <code>AUTHENTICATED</code> is a separate concern from TOTP itself — <a href="../cookie-auth-csrf-2fa/#defending-against-csrf">what CSRF is and how it's defended against is covered here</a>.</p>
-                <p>The backend mirrors that same three-state contract with an enum rather than a string union, so both sides of the wire are working off the same finite set of outcomes:</p>
-                <pre><code class="language-python">class LoginFlowStep(StrEnum):
-    """Login flow response steps (what the client should do next)."""
 
+                <p>
+                    The important design decision isn't the TypeScript syntax.
+                </p>
+
+                <p>
+                    It's that the authentication endpoint owns the state transition.
+                </p>
+
+                <p>
+                    The frontend doesn't independently decide whether MFA should be required.
+                </p>
+
+                <p>
+                    Instead, the backend answers:
+                </p>
+
+<pre><code class="language-text">                    Password valid
+                         │
+                         ▼
+                  Is MFA enabled?
+                    /          \
+                  no            yes
+                  │              │
+                  ▼              ▼
+            AUTHENTICATED   Enrollment complete?
+                              /          \
+                            no            yes
+                            │              │
+                            ▼              ▼
+                    TOTP_SETUP_REQUIRED  Trusted device?
+                                           /       \
+                                         yes        no
+                                         │           │
+                                         ▼           ▼
+                                  AUTHENTICATED  TOTP_REQUIRED</code></pre>
+
+                <p>
+                    Every client consuming the authentication API gets the same contract.
+                </p>
+
+                <p>
+                    The web application reacts to the state rather than reimplementing the authentication rules.
+                </p>
+
+                <p>
+                    The backend mirrors the same states:
+                </p>
+
+<pre><code class="language-python">class LoginFlowStep(StrEnum):
     TOTP_SETUP_REQUIRED = "TOTP_SETUP_REQUIRED"
     TOTP_REQUIRED = "TOTP_REQUIRED"
     AUTHENTICATED = "AUTHENTICATED"</code></pre>
-                <p>The login handler walks a short, ordered chain to decide which of the three it returns: if MFA isn't enabled for the account, straight to <code>AUTHENTICATED</code>; if the user has never completed enrollment, <code>TOTP_SETUP_REQUIRED</code>; if the browser isn't on the trusted-device list, <code>TOTP_REQUIRED</code>; otherwise, the device is already trusted and login falls through to <code>AUTHENTICATED</code> without ever prompting for a code. Every consumer of login — the web app today, anything else later — gets the same three-way answer instead of re-deriving this logic itself.</p>
 
-                <h3>What "trust this device" actually persists</h3>
-                <p>Checking that box does two things: it drops a <code>device_id</code> cookie in the browser, and it writes a matching row server-side. The cookie itself is just a random token — the server never trusts the raw value on its own, only its hash:</p>
-                <pre><code class="language-python">def generate_device_cookie() -> str:
-    return secrets.token_urlsafe(32)
+                <p>
+                    The login handler then follows one ordered decision tree:
+                </p>
 
-def compute_fingerprint(device_cookie: str) -> str:
-    return hashlib.sha256(device_cookie.encode()).hexdigest()</code></pre>
-                <p>Only that hash is persisted, alongside an expiry — so a leaked database dump gives an attacker nothing that reverses into a working cookie. On every later login, the same fingerprint gets re-derived from whatever cookie the browser presents and checked against that record; a match with an unexpired window is what lets a login fall through to <code>AUTHENTICATED</code> without ever prompting for a code, and anything else routes back to <code>TOTP_REQUIRED</code>.</p>
+                <ol>
+                    <li>Invalid password → reject authentication.</li>
+                    <li>MFA disabled → <code>AUTHENTICATED</code>.</li>
+                    <li>MFA enabled but enrollment incomplete → <code>TOTP_SETUP_REQUIRED</code>.</li>
+                    <li>MFA enabled and device untrusted → <code>TOTP_REQUIRED</code>.</li>
+                    <li>MFA enabled and device trusted → <code>AUTHENTICATED</code>.</li>
+                </ol>
+
+                <p>
+                    This makes the authentication flow explicit instead of spreading MFA rules across multiple endpoints and frontend components.
+                </p>
+
+                <p>
+                    The <code>csrf_token</code> returned with <code>AUTHENTICATED</code> is a separate security mechanism from TOTP. In this application, it is part of the transition from authentication to an authenticated browser session. <a href="../cookie-auth-csrf-2fa/#defending-against-csrf">CSRF protection is covered separately here</a>.
+                </p>
+
+                <h2>What "trust this device" actually means</h2>
+
+                <p>
+                    The trusted-device feature needs its own security model.
+                </p>
+
+                <p>
+                    The browser receives a random device token:
+                </p>
+
+<pre><code class="language-python">def generate_device_cookie() -> str:
+    return secrets.token_urlsafe(32)</code></pre>
+
+                <p>
+                    The server doesn't store that raw value.
+                </p>
+
+                <p>
+                    Instead, it derives a fingerprint:
+                </p>
+
+<pre><code class="language-python">def compute_fingerprint(device_cookie: str) -> str:
+    return hashlib.sha256(
+        device_cookie.encode()
+    ).hexdigest()</code></pre>
+
+                <p>
+                    The database stores the fingerprint together with:
+                </p>
+
+                <ul>
+                    <li>the user/account;</li>
+                    <li>expiration time;</li>
+                    <li>device metadata, if applicable;</li>
+                    <li>revocation state, if supported.</li>
+                </ul>
+
+                <p>
+                    On the next login:
+                </p>
+
+<pre><code class="language-text">Browser
+   │
+   │ device cookie
+   ▼
+Server
+   │
+   │ SHA-256(cookie)
+   ▼
+Database
+   │
+   ├── matching record?
+   ├── expired?
+   └── revoked?
+          │
+          ▼
+     trusted / untrusted</code></pre>
+
+                <p>
+                    This means a database dump doesn't directly contain the bearer token required to authenticate the browser.
+                </p>
+
+                <p>
+                    There is an important distinction here:
+                </p>
+
+                <p>
+                    <strong>This is not device identification.</strong>
+                </p>
+
+                <p>
+                    It is a bearer credential stored in a browser and recognized by the server.
+                </p>
+
+                <p>
+                    Calling it a "device fingerprint" can therefore be misleading. The application isn't proving that the physical laptop is the same laptop. It is proving that the browser possesses a previously issued secret.
+                </p>
+
+                <p>
+                    That is a much simpler and more honest security model.
+                </p>
+
+                <h2>Enrollment is a security boundary too</h2>
+
+                <p>
+                    One of the easiest mistakes in MFA implementations is thinking only about the successful path.
+                </p>
+
+                <p>
+                    Consider this sequence:
+                </p>
+
+<pre><code class="language-text">User enables MFA
+       │
+       ▼
+QR code displayed
+       │
+       ▼
+User scans it
+       │
+       ▼
+Browser closed</code></pre>
+
+                <p>
+                    Is MFA enabled?
+                </p>
+
+                <p>
+                    It shouldn't be.
+                </p>
+
+                <p>
+                    Until the user successfully verifies one TOTP code, the application hasn't established that enrollment completed successfully.
+                </p>
+
+                <p>
+                    That gives the system a clean invariant:
+                </p>
+
+                <blockquote>MFA is either not enrolled, or fully enrolled. There is no partially enrolled authentication state that can lock the user out.</blockquote>
+
+                <p>
+                    The same principle should apply when changing or removing an existing MFA factor. Factor replacement is a high-risk account operation and should require appropriate reauthentication and recovery controls. OWASP recommends treating MFA reset and factor changes as sensitive operations rather than ordinary profile updates.
+                </p>
+
+                <h2>The security details that are easy to miss</h2>
+
+                <p>
+                    TOTP itself is standardized, but a secure implementation still has several responsibilities around it.
+                </p>
+
+                <h3>Protect the TOTP secret</h3>
+
+                <p>
+                    The server must retain the secret because it needs to independently calculate the expected code.
+                </p>
+
+                <p>
+                    That secret therefore deserves stronger protection than ordinary application data.
+                </p>
+
+                <p>
+                    A database leak containing TOTP seeds is much more serious than a database leak containing already-expired OTP codes: the seed is the long-lived credential from which future codes can be generated.
+                </p>
+
+                <h3>Rate-limit verification</h3>
+
+                <p>
+                    A six-digit code has a relatively small search space.
+                </p>
+
+                <p>
+                    The application therefore needs authentication-attempt rate limiting and lockout/abuse controls around TOTP verification.
+                </p>
+
+                <p>
+                    The user should not be able to submit millions of guesses against an account.
+                </p>
+
+                <h3>Prevent replay</h3>
+
+                <p>
+                    A valid TOTP shouldn't simply be accepted repeatedly during its validity period.
+                </p>
+
+                <p>
+                    The verifier should track successful use of the relevant time step where appropriate so that the same OTP cannot simply be replayed. NIST explicitly requires OTP verifiers to accept a given OTP only once while it is valid.
+                </p>
+
+                <h3>Don't log the code</h3>
+
+                <p>
+                    OTP values should never end up in application logs, traces, exception messages, or analytics.
+                </p>
+
+                <p>
+                    Logs are often accessible to far more systems and people than the authentication database.
+                </p>
+
+                <h3>Protect recovery</h3>
+
+                <p>
+                    MFA creates a new problem:
+                </p>
+
+                <blockquote>What happens when the user loses the authenticator?</blockquote>
+
+                <p>
+                    The recovery mechanism is part of the MFA security boundary.
+                </p>
+
+                <p>
+                    If an attacker can simply click "I lost my authenticator" and receive an email link that bypasses MFA, then the attacker has found a weaker authentication path around the stronger factor.
+                </p>
+
+                <p>
+                    Recovery therefore needs to be designed with at least as much care as enrollment.
+                </p>
 
                 <h2>The outcome</h2>
-                <p>The result is a second factor that costs users almost nothing after the first setup: no SMS fees, no dependency on a third-party push service, no proprietary app requirement, and — thanks to trusted devices — no repeated friction on machines they already use daily. Security only asserts itself when it matters: a new device, a new browser, or a password that's been compromised.</p>
+
+                <p>
+                    The result isn't just "we added six-digit codes."
+                </p>
+
+                <p>
+                    It's a login flow with an explicit authentication state machine, one-time enrollment, TOTP verification, trusted-device handling, and a UX designed around the actual properties of the protocol.
+                </p>
+
+                <p>
+                    For users, MFA becomes almost invisible after the initial setup:
+                </p>
+
+<pre><code class="language-text">First login after enrollment
+
+Password
+   │
+   ▼
+TOTP
+   │
+   ▼
+Trust device ──► Login</code></pre>
+
+                <p>
+                    Later logins from that browser can simply become:
+                </p>
+
+<pre><code class="language-text">Password
+   │
+   ▼
+Login</code></pre>
+
+                <p>
+                    while a new or untrusted browser still requires:
+                </p>
+
+<pre><code class="language-text">Password
+   │
+   ▼
+TOTP
+   │
+   ▼
+Login</code></pre>
+
+                <p>
+                    The important lesson is that implementing MFA is not primarily a cryptography problem.
+                </p>
+
+                <p>
+                    The cryptography already exists in a standard.
+                </p>
+
+                <p>
+                    The engineering work is integrating that standard into the rest of the authentication system without creating weaker recovery paths, ambiguous authentication states, or unnecessary user friction.
+                </p>
+
+                <p>
+                    TOTP was the right trade-off for this application, but it is not the final word in authentication security. For applications with stronger phishing-resistance requirements, <strong>WebAuthn/passkeys are the better direction</strong>. NIST's current guidance explicitly treats OTP as non-phishing-resistant while requiring phishing-resistant options at higher assurance levels.
+                </p>
+
+                <p>
+                    The principle is therefore simple:
+                </p>
+
+                <blockquote>Choose the strongest authentication mechanism your threat model requires — then spend just as much engineering effort making the secure path the easiest path.</blockquote>
 
             </article>
 
