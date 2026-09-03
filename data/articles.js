@@ -107,10 +107,10 @@ window.ARTICLES = [
     },
     {
         slug: 'bundle-permissions-validate',
-        title: 'Catching Missing Grants Before Deploy: The Databricks Asset Bundle Permissions Model',
-        desc: "A missing reader group on one job led to centralizing access in the bundle's top-level permissions block — and treating bundle validate output as a pre-deploy permissions audit instead of just a syntax check.",
+        title: "Databricks Asset Bundles: Making Permissions a Bundle-Level Contract",
+        desc: "A missing reader group on one job led to centralizing access in the bundle's top-level permissions block — and to being precise about what bundle validate actually checks versus what centralizing the grant protects against.",
         date: '2025-12-12',
-        readTime: 8,
+        readTime: 10,
         discipline: 'devops',
         tags: ['ci-cd'],
         status: 'published',

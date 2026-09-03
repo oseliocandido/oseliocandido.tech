@@ -3,18 +3,18 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Catching Missing Grants Before Deploy — Oselio Candido</title>
-    <meta name="description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, with bundle validate as a pre-deploy audit.">
+    <title>Databricks Bundle Permissions as a Contract — Oselio Candido</title>
+    <meta name="description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, and why bundle validate is a config-resolution check, not a missing-grant detector.">
     <link rel="canonical" href="https://oseliocandido.tech/blog/articles/bundle-permissions-validate/">
     <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Oselio Candido">
-    <meta property="og:title" content="Catching Missing Grants Before Deploy — Oselio Candido">
-    <meta property="og:description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, with bundle validate as a pre-deploy audit.">
+    <meta property="og:title" content="Databricks Bundle Permissions as a Contract — Oselio Candido">
+    <meta property="og:description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, and why bundle validate is a config-resolution check, not a missing-grant detector.">
     <meta property="og:url" content="https://oseliocandido.tech/blog/articles/bundle-permissions-validate/">
     <meta name="twitter:card" content="summary">
-    <meta name="twitter:title" content="Catching Missing Grants Before Deploy — Oselio Candido">
-    <meta name="twitter:description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, with bundle validate as a pre-deploy audit.">
+    <meta name="twitter:title" content="Databricks Bundle Permissions as a Contract — Oselio Candido">
+    <meta name="twitter:description" content="How a Databricks Asset Bundle's top-level permissions block grants access once instead of per-resource, and why bundle validate is a config-resolution check, not a missing-grant detector.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -44,13 +44,13 @@
             <div class="article-page__header">
                 <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
                 <span class="article-page__tag">CI/CD</span>
-                <h1 class="article-page__title">Catching Missing Grants Before Deploy: The Databricks Asset Bundle Permissions Model</h1>
+                <h1 class="article-page__title">Databricks Asset Bundles: Making Permissions a Bundle-Level Contract</h1>
                 <div class="article-page__meta">
                     <span>Oselio Candido</span>
                     <span>·</span>
                     <span>Dec 12, 2025</span>
                     <span>·</span>
-                    <span>8 min read</span>
+                    <span>10 min read</span>
                 </div>
             </div>
 
@@ -59,13 +59,13 @@
                 <div class="flow-diagram">
                     <div class="flow-diagram__branch">
                         <div class="flow-diagram__node">Top-level permissions block<small>databricks.yml — inherited by every job, pipeline, dashboard under resources/</small></div>
-                        <div class="flow-diagram__node">Job-level permissions override<small>e.g. daily_etl_job.yml — applies only to that single resource</small></div>
+                        <div class="flow-diagram__node">Job-level permissions<small>e.g. daily_etl_job.yml — applies only to that single resource, subject to the bundle's precedence rules</small></div>
                     </div>
                     <div class="flow-diagram__arrow"></div>
                     <div class="flow-diagram__node">databricks bundle validate</div>
                     <div class="flow-diagram__branch">
-                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">warns on unresolved groups/vars</span>Caught pre-deploy<small>as permissions audit</small></div>
-                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">missed warning</span>Runtime access-denied incident</div>
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">malformed reference</span>Caught pre-deploy<small>as a config-resolution check</small></div>
+                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">genuinely missing grant</span>Not caught by validate<small>caught by centralizing the grant instead</small></div>
                     </div>
                 </div>
 
@@ -86,10 +86,22 @@
                     That entry is honest about what it is: a targeted, job-level patch, with the group hardcoded to the PRD satellite rather than templated through <code>${bundle.target}</code> the way the developer group above it is. It solved the immediate access problem for that one job. It did nothing for every other resource in the bundle the same reader group also needed to see — dashboards, other jobs in the same domain, anything added later. A bundle with dozens of jobs, pipelines, and dashboards means a group missing from one job's permissions block is rarely an isolated gap; it's usually a sign the group was never added anywhere, and every other job is one missing line away from the same problem. Fixing access one resource at a time in a bundle that deploys dozens of resources doesn't scale; it just relocates the next missing-permission incident to whichever resource wasn't touched.
                 </p>
 
+<pre><code class="language-text">Before                                  After
+
+job_a.yml       reader: present         databricks.yml
+job_b.yml       reader: present           _Content_Reader → CAN_VIEW
+job_c.yml       reader: MISSING                    │
+job_d.yml       reader: present          inherited by every resource
+dashboard.yml   reader: MISSING                     │
+                                          job_a, job_b, job_c, job_d, dashboard</code></pre>
+                <p>
+                    The gap on the left isn't visible anywhere as a single fact — it only exists as the absence of one line in two files out of five, discoverable by reading every file and comparing. On the right, the same policy is one line in one place, and a resource missing it is no longer a possibility.
+                </p>
+
                 <h2>What a Bundle's Permissions Model Actually Is</h2>
 
                 <p>
-                    Databricks Asset Bundles support permissions at two levels: per-resource, inside an individual job or pipeline definition, and bundle-wide, in a single <code>permissions:</code> block at the top of <code>databricks.yml</code>. The bundle-wide block is applied to every resource the bundle manages — every job, every pipeline, every dashboard — unless a specific resource overrides it with its own <code>permissions:</code> section. The bundle's deploying identity (the user or service principal running <code>bundle deploy</code>) also gets implicit <code>CAN_MANAGE</code> on everything it deploys, separately from whatever is declared explicitly. Principals can be a <code>user_name</code>, a <code>group_name</code>, or a <code>service_principal_name</code>, and the levels available are the same three regardless of principal type: <code>CAN_VIEW</code>, <code>CAN_RUN</code>, and <code>CAN_MANAGE</code>.
+                    Databricks Asset Bundles support permissions at two levels: per-resource, inside an individual job or pipeline definition, and bundle-wide, in a single <code>permissions:</code> block at the top of <code>databricks.yml</code>. The bundle-wide block is applied to every resource the bundle manages — every job, every pipeline, every dashboard — unless a specific resource adds its own <code>permissions:</code> section, which can layer in more specific access subject to the bundle's own precedence rules for how the two levels combine. The bundle's deploying identity (the user or service principal running <code>bundle deploy</code>) also gets implicit <code>CAN_MANAGE</code> on everything it deploys, separately from whatever is declared explicitly. Principals can be a <code>user_name</code>, a <code>group_name</code>, or a <code>service_principal_name</code>. At the bundle's top-level block, the levels available are the same three regardless of principal type: <code>CAN_VIEW</code>, <code>CAN_RUN</code>, and <code>CAN_MANAGE</code> — individual resource types can expose their own, more specific permission levels beyond this top-level set, but that finer vocabulary isn't the concern of this bundle-wide block.
                 </p>
 
                 <p>
@@ -121,6 +133,10 @@ permissions:
                     Two things are worth noticing in that list beyond the fact that it exists. First, the distinction between <code>service_principal_name</code> and <code>group_name</code> entries: the CI/CD deploy identity is granted <code>CAN_MANAGE</code> as a service principal, while every human-facing grant — developer, reader, admin, operator — is a named Active Directory group, so access is managed by group membership rather than by editing this file per person. Second, the one entry that isn't a static string: the satellite reader group interpolates <code>${var.satellite_number}</code> and <code>${bundle.target}</code>, the same two values used elsewhere in the bundle to build environment-specific resource paths. That single line resolves to a different, fully qualified group name per target — the group that's actually valid in TST is not the same string as the one valid in PRD — without needing a second static entry duplicated for each target.
                 </p>
 
+                <p>
+                    It's worth being explicit that the group name and the permission level are two different abstractions. <code>&lt;prefix&gt;_Content_Admin</code> reads like an organizational role, but the <code>CAN_VIEW</code> next to it describes only what that role can do with these specific bundle resources, not what "admin" implies more broadly — a group named Admin getting <code>CAN_VIEW</code> here just means these resources aren't where that group's administrative rights get exercised.
+                </p>
+
                 <h2>The Alternatives</h2>
 
                 <p>
@@ -132,7 +148,7 @@ permissions:
                 </p>
 
                 <p>
-                    The third was to stop granting access resource-by-resource and use the bundle's own top-level <code>permissions:</code> block as the single source of truth, letting every resource inherit from it unless it explicitly needs to diverge. This uses a first-class feature of the deployment tool instead of working around it, at the cost of losing some of the fine-grained, resource-by-resource visibility the per-job patch had — a tradeoff that's fine as long as resource-level overrides remain available for the genuine exceptions.
+                    The third was to stop granting access resource-by-resource and use the bundle's own top-level <code>permissions:</code> block as the default source of truth, letting every resource inherit from it unless it explicitly needs more specific access. This uses a first-class feature of the deployment tool instead of working around it, at the cost of losing some of the fine-grained, resource-by-resource visibility the per-job patch had — a tradeoff that's fine as long as resource-level overrides remain available for the genuine exceptions.
                 </p>
 
                 <h2>The Decision</h2>
@@ -142,7 +158,7 @@ permissions:
                 </p>
 
                 <p>
-                    That's a meaningfully different failure mode than the per-job patch. With a bundle-wide entry, a group is either present once for the whole bundle or it's visibly absent from one list — there's no longer a question of which of N job files happens to be missing the line. The tradeoff runs the other way too: a resource-level override is still the right tool when a specific job genuinely needs different access than everything else in the bundle — the top-level block is a default, not a ceiling, and any resource can still declare its own <code>permissions:</code> to diverge from it.
+                    That's a meaningfully different failure mode than the per-job patch. With a bundle-wide entry, a group is either present once for the whole bundle or it's visibly absent from one list — there's no longer a question of which of N job files happens to be missing the line. The tradeoff runs the other way too: a resource-level <code>permissions:</code> block is still the right tool when a specific job genuinely needs different access than everything else in the bundle — the top-level block is a default, not a ceiling, and any resource can still declare its own, more specific permissions on top of it, subject to the bundle's own precedence rules.
                 </p>
 
                 <p>
@@ -150,17 +166,17 @@ permissions:
                 </p>
 
                 <p>
-                    Centralizing the grant only closes the gap if a missing group actually gets noticed before deploy, which put weight on how <code>databricks bundle validate</code> gets used. It's run routinely as a pre-deploy check to catch YAML and reference errors, but it also surfaces warnings about the bundle's resolved configuration — including permission entries that reference variables or groups that don't resolve the way the rest of the bundle expects. Treating that output as informational noise to scroll past is the same mistake as treating a linter's warnings as noise: the warning is the mechanism doing exactly what it's for. The practice that matters here is deliberately reading <code>bundle validate</code> — and <code>bundle deploy</code> run verbosely — as a pre-deploy permissions audit, not only a syntax gate, because it's the only checkpoint that exists before the gap shows up as someone unable to open a job they should be able to see.
+                    It's worth being precise about what <code>databricks bundle validate</code> does and doesn't buy here. Run routinely as a pre-deploy check, it resolves the bundle's configuration and will surface an error if a permission entry references a variable or group name that doesn't resolve cleanly — a typo in <code>${var.satellite_number}</code>, say, or a reference to a variable that was never defined. That's a real, useful check, and it's worth reading the CLI output for rather than scrolling past it. What it can't do is know that a group should have access and flag its absence — <code>validate</code> catches a malformed reference, not a policy nobody wrote down. The actual protection against a missing grant is structural, not a validation step: centralizing the permission at the bundle level means there's exactly one place a reader group can be missing from, instead of one per resource, which turns an omission into something a single glance at <code>databricks.yml</code> can catch.
                 </p>
 
                 <blockquote>
-                    A missing permission caught by <code>bundle validate</code> costs a few minutes of reading CLI output before a deploy. The same gap caught by a user hitting "access denied" costs a support ticket, an investigation into whether the denial is a bug or intentional, and a re-deploy — for the exact same one-line fix.
+                    A malformed permission reference caught by <code>bundle validate</code> costs a few minutes of reading CLI output before a deploy. A genuinely missing grant, now that it lives in one top-level block instead of scattered across every resource file, costs one look at <code>databricks.yml</code> instead of a support ticket, an investigation into whether the denial is a bug or intentional, and a re-deploy — for the same one-line fix.
                 </blockquote>
 
                 <h2>The Outcome</h2>
 
                 <p>
-                    The environment-templated satellite reader group now resolves <code>CAN_VIEW</code> once, at the bundle level, instead of requiring a matching entry in every job and pipeline definition under <code>resources/</code>. The bundle's top-level <code>permissions:</code> block carries nine entries covering the full access model — CI/CD deploy identity, release and runner service accounts, developer, reader, admin, operator, infrastructure reader, and the environment-templated satellite reader — each declared once and inherited by every resource the bundle manages rather than repeated per file. Any resource that genuinely needs different access still can, through its own <code>permissions:</code> override, but the default case — a new job added to an existing domain — now needs no permissions edit at all to get the access every other resource in the bundle already has.
+                    The environment-templated satellite reader group now resolves <code>CAN_VIEW</code> once, at the bundle level, instead of requiring a matching entry in every job and pipeline definition under <code>resources/</code>. The bundle's top-level <code>permissions:</code> block carries nine entries covering the full access model — CI/CD deploy identity, release and runner service accounts, developer, reader, admin, operator, infrastructure reader, and the environment-templated satellite reader — each declared once and inherited by every resource the bundle manages rather than repeated per file. Any resource that genuinely needs different access can still declare more specific permissions of its own, subject to the bundle's precedence rules, but the default case — a new job added to an existing domain — now needs no permissions edit at all to get the access every other resource in the bundle already has.
                 </p>
 
             </article>
