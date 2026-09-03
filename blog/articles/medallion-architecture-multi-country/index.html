@@ -50,7 +50,7 @@
                     <span>·</span>
                     <span>Mar 5, 2026</span>
                     <span>·</span>
-                    <span>17 min read</span>
+                    <span>18 min read</span>
                 </div>
             </div>
 
@@ -105,7 +105,7 @@
                 </p>
 
                 <p>
-                    <strong>Full medallion architecture with a conformed dimensional bus layer.</strong> Land raw untouched, type and normalise at stage, build shared dimensions and facts at bus, and expose thin, purpose-built aggregates at serve. Slower to deliver the first KPI — there's schema work with no dashboard to show for it — but every subsequent KPI reuses the same dimensions instead of accumulating one-off joins, and each layer boundary contains the blast radius of upstream changes.
+                    <strong>Full medallion architecture with a conformed dimensional bus layer.</strong> Land raw untouched, type and normalise at stage, build shared dimensions and facts at bus, and expose thin, purpose-built aggregates at serve. Slower to deliver the first KPI — there's schema work with no dashboard to show for it — but every subsequent KPI reuses the same dimensions instead of accumulating one-off joins, and each layer boundary contains the blast radius of upstream changes. For a single-country, single-KPI domain the calculus would likely tip the other way — the upfront schema investment only pays off once the number of KPIs, countries, or reporting scopes is large enough that duplicated dimension logic becomes the more expensive problem.
                 </p>
 
                 <h2>The Decision</h2>
@@ -121,7 +121,7 @@
                 <h3>Raw Layer: Mirror, Don't Interpret</h3>
 
                 <p>
-                    The raw layer holds exactly what arrived from the source systems — no column renames, no type coercion, no filtering. For the department domain this meant landing four source feeds: profit center metadata, store hours worked, sick leave hours, and the Compass department pivot export. We deliberately kept the raw schema as close to the source as possible so that upstream changes were visible immediately, not masked behind a transformation.
+                    The raw layer holds the source payload as delivered — no column renames, no type coercion, no filtering — plus the technical metadata (an ingestion timestamp, for instance) needed to reason about it later; nothing about the business content of the file is touched. For the department domain this meant landing four source feeds: profit center metadata, store hours worked, sick leave hours, and the Compass department pivot export. We deliberately kept the raw schema as close to the source as possible so that upstream changes were visible immediately, not masked behind a transformation.
                 </p>
 
                 <p>
@@ -135,7 +135,7 @@
                 </p>
 
                 <p>
-                    We adopted a SQL-first approach for stage transformations: business logic written as <code>spark.sql()</code> queries against a notebook-scoped Spark session, with Python responsible only for configuration injection and orchestration. That choice wasn't just about readability — the KPI logic didn't start life in our hands. Business users had already written and validated the queries that defined each metric, and the fastest, lowest-risk path to production was to hand those queries to developers largely as-is rather than translate every one of them into the PySpark DataFrame API. A <code>spark.sql</code> query is also far easier to unit-test against a fixture table than a chain of DataFrame transformations — you assert on the query's output, not on the shape of an intermediate API call chain. Rewriting everything into DataFrame syntax would have added translation risk for no real performance gain, since Spark's SQL and DataFrame APIs compile to the same execution plan.
+                    We adopted a SQL-first approach for stage transformations: business logic written as <code>spark.sql()</code> queries against a notebook-scoped Spark session, with Python responsible only for configuration injection and orchestration. That choice wasn't just about readability — the KPI logic didn't start life in our hands. Business users had already written and validated the queries that defined each metric, and the fastest, lowest-risk path to production was to hand those queries to developers largely as-is rather than translate every one of them into the PySpark DataFrame API. A <code>spark.sql</code> query was also easier to test in our case, specifically because the query text matched what business users had already validated — a fixture-based test could assert directly on that output, without a translation step into the DataFrame API introducing a second point of failure. Rewriting everything into DataFrame syntax would have added translation risk for no real performance gain, since Spark's SQL and DataFrame APIs compile to the same execution plan.
                 </p>
 
                 <p>
@@ -179,7 +179,7 @@ WHERE str_to_date(raw_date_col) BETWEEN :start_dt AND :end_dt</code></pre>
 
                 <ul>
                     <li><strong>dim_kpi_type</strong> — a static reference dimension seeded from a constants file, mapping each KPI type to a surrogate key and, after the Compass extension, to a <code>reporting_scope_nm</code> that distinguished Store, Warehouse, and Finance scopes.</li>
-                    <li><strong>dim_profit_center</strong> — a slowly-changing dimension enriched from an external SAP source. Seventeen columns wide, with surrogate keys generated by hashing a composite of <code>profit_center_id</code>, <code>corporate</code>, and <code>ymd</code>.</li>
+                    <li><strong>dim_profit_center</strong> — a slowly-changing dimension enriched from an external SAP source. Seventeen columns wide, keyed by a deterministic hash of <code>profit_center_id</code>, <code>corporate</code>, and <code>ymd</code> rather than an artificial surrogate key — including <code>ymd</code> in the hash means the grain is one row per profit center per corporate per day.</li>
                     <li><strong>fact_hr_kpi</strong> — the central fact table, 45 columns, partitioned by <code>(ymd, corporate, kpi_type_sk)</code>.</li>
                 </ul>
 
@@ -245,7 +245,7 @@ enriched_df   = get_query_enrich_compass_kpis(
                 </p>
 
                 <p>
-                    The Compass extension added three more: <code>fact_month_compass_store</code>, <code>fact_month_compass_warehouse</code>, and <code>fact_month_compass_finance</code>, one per reporting scope. Keeping scopes as separate tables rather than a single table with a scope discriminator was a deliberate choice — it let BI developers apply role-level security at the table boundary rather than relying on row filters, which are easier to misconfigure.
+                    The Compass extension added three more: <code>fact_month_compass_store</code>, <code>fact_month_compass_warehouse</code>, and <code>fact_month_compass_finance</code>, one per reporting scope. Keeping scopes as separate tables rather than a single table with a scope discriminator was a deliberate choice — it gave BI developers a simpler security boundary to work with — granting or denying access to a whole table is a coarser, easier-to-reason-about control than maintaining row-level filters, though it isn't a substitute for getting either one right.
                 </p>
 
                 <h2>Cross-Country KPI Challenges</h2>
@@ -293,7 +293,7 @@ JOIN bus_hr.dim_kpi_type k
                 <h3>Surrogate Keys Across Corporate Boundaries</h3>
 
                 <p>
-                    Profit centers are reused across different corporate entities — the same numeric code means different things in different countries. Our first version of <code>dim_profit_center</code> generated surrogate keys by hashing only the profit center identifier, which produced collisions the moment we loaded a second country. The fix was to include <code>corporate</code> in the hash input: <code>SHA2(CONCAT(profit_center_id, '|', corporate, '|', ymd), 256)</code>. We also extended the merge key in <code>dim_profit_center</code> to include <code>COMPANY_ID</code> alongside the existing <code>WAREHOUSE_ID</code>, <code>DC_CLUSTER_ID</code>, and <code>CORPORATE</code> columns — adding that fourth column to the merge condition eliminated duplicate facility records that had been silently accumulating since the second country was loaded.
+                    Profit centers are reused across different corporate entities — the same numeric code means different things in different countries. Our first version of <code>dim_profit_center</code> generated keys by hashing only the profit center identifier, which produced collisions the moment we loaded a second country. The fix was to include <code>corporate</code> in the hash input: <code>SHA2(CONCAT(profit_center_id, '|', corporate, '|', ymd), 256)</code>. We also extended the merge key in <code>dim_profit_center</code> to include <code>COMPANY_ID</code> alongside the existing <code>WAREHOUSE_ID</code>, <code>DC_CLUSTER_ID</code>, and <code>CORPORATE</code> columns — adding that fourth column to the merge condition eliminated duplicate facility records that had been silently accumulating since the second country was loaded.
                 </p>
 
                 <h2>Dimensional Modelling Choices</h2>
@@ -359,7 +359,7 @@ SCOPE_FINANCE   = "Finance"</code></pre>
                 </p>
 
                 <p>
-                    Not everything was right from the start. The schema discipline around multi-country support was not — <code>CORPORATE</code> had to be retrofitted through six tables and their migrations after the fact, and <code>reporting_scope_nm</code> was added to <code>dim_kpi_type</code> as an afterthought rather than a day-one design decision. Both retrofits worked, because the layer boundaries meant each fix touched a bounded set of tables rather than cascading through the whole pipeline, but both were more expensive than they needed to be. That gap is now the concrete argument for the next domain built this way: model for the full target scope — every country, every reporting axis expected eventually — before the first KPI ships, not alongside it. The medallion architecture absorbed every one of these mistakes without a production incident; it just made the cost of the mistake visible as a migration, instead of hidden as a query that quietly returned wrong numbers.
+                    Not everything was right from the start. The schema discipline around multi-country support was not — <code>CORPORATE</code> had to be retrofitted through six tables and their migrations after the fact, and <code>reporting_scope_nm</code> was added to <code>dim_kpi_type</code> as an afterthought rather than a day-one design decision. Both retrofits worked, because the layer boundaries meant each fix touched a bounded set of tables rather than cascading through the whole pipeline, but both were more expensive than they needed to be. That gap is now the concrete argument for the next domain built this way: model for the full target scope — every country, every reporting axis expected eventually — before the first KPI ships, not alongside it. Because each layer boundary contained the blast radius of these mistakes to a bounded set of tables, both retrofits shipped as migrations instead of surfacing as a production incident — the same containment property the architecture was chosen for in the first place, not a guarantee that comes free with any medallion build.
                 </p>
 
             </article>

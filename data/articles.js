@@ -66,7 +66,7 @@ window.ARTICLES = [
         title: 'Medallion Architecture in Practice: Lessons from Building a Department Analytics Domain from Scratch',
         desc: 'A full star-schema HR domain — 30+ KPIs across 4+ markets — built layer by layer on Databricks, plus the multi-country schema lessons learned scaling it from 1 to 6 countries.',
         date: '2026-03-05',
-        readTime: 17,
+        readTime: 18,
         discipline: 'data-engineering',
         tags: ['databricks'],
         status: 'published',
