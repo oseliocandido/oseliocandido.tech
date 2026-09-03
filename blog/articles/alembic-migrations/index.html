@@ -47,13 +47,13 @@
             <div class="article-page__header">
                 <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
                 <span class="article-page__tag">Backend Engineering</span>
-                <h1 class="article-page__title">Migrations as Code: Eight Advantages of Version-Controlled Database Changes</h1>
+                <h1 class="article-page__title">Migrations as Code: Six Advantages of Version-Controlled Database Changes</h1>
                 <div class="article-page__meta">
                     <span>Oselio Candido</span>
                     <span>·</span>
                     <span>Jul 2026</span>
                     <span>·</span>
-                    <span>5 min read</span>
+                    <span>7 min read</span>
                 </div>
             </div>
 
@@ -63,21 +63,19 @@
                 <p>A migration is a versioned script that modifies your database schema. It's tracked in version control alongside your application code, so every change to a table structure, column, index, or constraint has a commit history and a reason. No more "nobody knows when that column was added" or "somebody dropped this table in production and we're not sure why."</p>
 
                 <h2>Why version control migrations with code</h2>
-                <p>A migration lives in a file with a unique ID, an <code>upgrade()</code> function, and a <code>downgrade()</code> function. When you deploy, the database runs the upgrade path; if a release goes bad, downgrade rolls it back. Because migrations are code, they're reviewable in pull requests, they produce a complete audit trail, and they're reversible — no manual SQL scripts that someone has to remember how to unwind.</p>
+                <p>A migration lives in a file with a unique ID, an <code>upgrade()</code> function, and a <code>downgrade()</code> function that, when practical, reverses it. Because migrations are code, they're reviewable in pull requests and they produce a complete audit trail — no manual SQL scripts that someone has to remember how to unwind. <code>downgrade()</code> reverses a schema change, not a release: it doesn't restore data the upgrade or a subsequent application version already destroyed or transformed, which matters more than it sounds like it should — more on that below.</p>
 
                 <h2>Multi-environment advantages</h2>
-                <p>The same migration runs identically on your laptop, in staging, and in production. You don't get schema drift — a dev database that doesn't match staging, or a production schema nobody can fully describe. When a new environment spins up, it runs the entire migration chain from the start and lands on the exact same schema as production. There's no "run these files in this order, except skip this one" — everything is explicit, tracked, and reproducible.</p>
+                <p>The same migration sequence is applied to every environment, so dev, staging, and production all converge on the same intended schema history, which greatly reduces drift compared to hand-run SQL scripts that some environments get and others don't. It's a reduction, not an absolute guarantee — nothing stops someone from running <code>ALTER TABLE</code> by hand against production outside the migration chain, which is exactly the gap <code>alembic check</code> below exists to catch. When a new environment spins up, it runs the entire migration chain from the start and lands on the same schema history as production. There's no "run these files in this order, except skip this one" — everything is explicit and tracked.</p>
 
                 <h2>Why this matters</h2>
                 <ul>
                     <li><strong>Reviewable in pull requests</strong> — Schema changes are code, so they go through the same code review process as application logic. Teammates can catch issues before they reach production.</li>
-                    <li><strong>Complete audit trail</strong> — Every schema change has a commit message, author, and timestamp. You know exactly who changed what and when.</li>
-                    <li><strong>Reversible</strong> — Each migration has an <code>upgrade()</code> and <code>downgrade()</code> function. If a release goes bad, you can roll back the schema to the previous state.</li>
-                    <li><strong>No schema drift</strong> — Dev, staging, and production all run the same migrations in the same order. No "this works on my machine" database schema problems.</li>
-                    <li><strong>Reproducible across environments</strong> — New environments spin up by running the entire migration chain from the start and land on the exact same schema as production.</li>
+                    <li><strong>Complete audit trail</strong> — Every schema change has a commit message, author, and timestamp, plus a reason for it if the PR does its job — a record of who changed what, when, and why.</li>
+                    <li><strong>Reversible where practical</strong> — Each migration has an <code>upgrade()</code> and <code>downgrade()</code> function, so a purely structural change (a column, an index) can be undone. A migration that destroys data can restore the schema shape but not the rows — reversibility is a schema property, not a data-recovery guarantee.</li>
+                    <li><strong>Drift-resistant across environments</strong> — Dev, staging, and production run the same migration sequence in the same order, and a new environment reproduces the same schema history from scratch instead of depending on someone's memory of which manual scripts to run.</li>
                     <li><strong>Explicit and tracked</strong> — No "run these files in this order, except skip this one" confusion. Everything is recorded in version control.</li>
-                    <li><strong>Schema and code evolve together</strong> — Migrations live in the same pull request as the application code that depends on them, keeping them synchronized.</li>
-                    <li><strong>Auditable</strong> — You have a complete record of every schema change, why it happened, and who approved it.</li>
+                    <li><strong>Schema and code evolve together, not necessarily atomically</strong> — Migrations live in the same pull request as the application code that depends on them, but the migration and the new application code still deploy as two separate events. A migration that adds a <code>NOT NULL</code> column before the new code is running will break the old code's inserts in the gap between the two; adding it nullable first, backfilling, then tightening it in a later migration avoids that window.</li>
                 </ul>
 
                 <h2>What is Alembic?</h2>
@@ -85,11 +83,11 @@
 
                 <h2>Core commands</h2>
 
-                <p><strong><code>autogenerate</code></strong> — Alembic inspects your SQLAlchemy models and the current database schema, then drafts a migration file that captures the difference. It's not perfect (complex constraints sometimes need manual tweaking), but it handles the common cases: new tables, columns, indexes, and basic type changes. See the <a href="https://alembic.sqlalchemy.org/en/latest/index.html" target="_blank" rel="noopener noreferrer">Alembic documentation</a> for details.</p>
+                <p><strong><code>autogenerate</code></strong> — Alembic inspects your SQLAlchemy models and the current database schema, then drafts a migration file that captures the difference. It's a candidate, not an authoritative answer: it detects a difference between metadata and database, not whether that difference is the schema change you actually intended, and it's not perfect even at detection (complex constraints sometimes need manual tweaking) — it handles the common cases well: new tables, columns, indexes, and basic type changes. Every autogenerated file gets reviewed before it's treated as correct. See the <a href="https://alembic.sqlalchemy.org/en/latest/index.html" target="_blank" rel="noopener noreferrer">Alembic documentation</a> for details.</p>
 
-                <p><strong><code>upgrade</code></strong> — Runs all pending migrations forward to bring the database to the target state. <code>upgrade head</code> takes it all the way to the latest; <code>upgrade +2</code> runs just the next two. Each migration executes its <code>upgrade()</code> function and records itself in the <code>alembic_version</code> table.</p>
+                <p><strong><code>upgrade</code></strong> — Runs all pending migrations forward to bring the database to the target state. <code>upgrade head</code> takes it all the way to the latest; <code>upgrade +2</code> runs just the next two. Each migration executes its <code>upgrade()</code> function, and Alembic records the new revision in the <code>alembic_version</code> table.</p>
 
-                <p><strong><code>downgrade</code></strong> — Rolls back migrations in reverse. <code>downgrade -1</code> undoes the most recent migration by running its <code>downgrade()</code> function. This is where the reversibility promise lives — if a migration broke the schema, you can undo it. <code>downgrade</code> is rarely used in production (you're usually trying to go forward, not backward), but it's invaluable for development and testing rollback procedures.</p>
+                <p><strong><code>downgrade</code></strong> — Rolls back migrations in reverse. <code>downgrade -1</code> undoes the most recent migration by running its <code>downgrade()</code> function, restoring the schema shape it had before. In production, that's usually not the safest way to recover from a bad release — rolling the application back to the previous version while leaving the database ahead of it, provided the schema change was made backward-compatible in the first place, avoids ever asking the database to move backward. <code>downgrade</code> earns its keep in development and in testing that a migration's rollback path is actually correct.</p>
 
                 <p><strong><code>check</code></strong> — Compares the database schema against your SQLAlchemy models and reports any mismatches. It's useful in CI pipelines to catch schema drift — situations where the database has drifted from what the code expects (maybe someone ran a manual SQL script, or a migration failed partway through).</p>
 
@@ -130,10 +128,11 @@
     op.create_index("ix_balance_id", "balance", ["id"], unique=False)
     op.create_index("ix_balance_date", "balance", ["date"], unique=False)</code></pre>
 
-                <blockquote>A downgrade must restore the schema to the exact state it was before the upgrade ran. If it doesn't, a rollback looks like it worked while quietly corrupting your data model.</blockquote>
+                <p>Notice exactly what this downgrade restores: the table definition, its columns, constraints, indexes, and default — the schema shape. It does not restore the rows that existed in <code>balance</code> before <code>upgrade()</code> dropped the table; those are gone the moment the drop runs, and no <code>downgrade()</code> can bring them back. For a destructive migration like this one, "reversible" means structurally reversible, not data-reversible — the two are easy to conflate until a migration like this one forces the distinction.</p>
+                <blockquote>A downgrade must restore the schema to the exact state it was before the upgrade ran. If it doesn't, a rollback looks like it worked while quietly corrupting your data model — and even when it does, "the schema is back" and "the data is back" are two different claims.</blockquote>
 
                 <h2>The outcome</h2>
-                <p>Schema changes become auditable, reproducible across environments, and reversible. Your migrations live in the same pull request as the application code that depends on them, so the schema and the code that queries it evolve together. Deployments include schema changes as code, not as manual SQL scripts or runbooks that someone has to remember.</p>
+                <p>Schema changes become auditable, reproducible across environments, and reversible for what reversibility actually means at the schema level — restoring shape, not resurrecting deleted data. Your migrations live in the same pull request as the application code that depends on them, with an eye on deployment ordering rather than assuming the two land atomically. Deployments include schema changes as code, not as manual SQL scripts or runbooks that someone has to remember, and the failure modes that remain — drift from a manual query, a destructive downgrade that can't restore data — are the ones worth designing around explicitly rather than assuming migrations solved for free.</p>
 
             </article>
 

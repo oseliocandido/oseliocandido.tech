@@ -197,10 +197,10 @@ window.ARTICLES = [
     },
     {
         slug: 'alembic-migrations',
-        title: 'Migrations as Code: Eight Advantages of Version-Controlled Database Changes',
+        title: 'Migrations as Code: Six Advantages of Version-Controlled Database Changes',
         desc: 'From schema drift to versioned code: how Alembic tracks history with alembic_version, the async-to-sync URL trick in env.py, single-head validation in CI, and a real drop-table migration with a full downgrade.',
         date: '2026-07-15',
-        readTime: 5,
+        readTime: 7,
         discipline: 'backend',
         tags: ['alembic', 'migrations', 'postgres', 'sqlalchemy'],
         status: 'published',
