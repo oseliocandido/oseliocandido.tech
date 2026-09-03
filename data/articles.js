@@ -244,7 +244,7 @@ window.ARTICLES = [
         title: 'Stateful Sessions in Redis Instead of JWT: Why I Skipped Tokens',
         desc: 'Sliding-TTL sessions in Redis, double-submit CSRF bound to the session, and the revocation requirement that made stateless JWT the wrong default for a B2B SaaS.',
         date: '2026-07-15',
-        readTime: 7,
+        readTime: 9,
         discipline: 'backend',
         tags: ['auth', 'security'],
         status: 'published',
