@@ -211,7 +211,7 @@ window.ARTICLES = [
         title: 'Why Use an ORM (and What It Costs)',
         desc: 'Identity maps, unit-of-work, and the mapper layer that keeps domain entities free of SQLAlchemy — plus where the ORM ends and raw query services begin.',
         date: '2026-07-15',
-        readTime: 6,
+        readTime: 7,
         discipline: 'backend',
         tags: ['sqlalchemy'],
         status: 'published',
