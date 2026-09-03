@@ -121,7 +121,7 @@ window.ARTICLES = [
         title: 'Sizing Compute as Code: Reusable Job Clusters for Databricks Pipelines',
         desc: 'Replacing a shared all-purpose cluster with three sized, ephemeral job-cluster presets defined as DAB complex variables — the sizing rationale, the Spot-with-fallback tradeoff, and what it took to make notebook initialization portable.',
         date: '2026-01-27',
-        readTime: 11,
+        readTime: 12,
         discipline: 'data-engineering',
         tags: ['performance', 'databricks', 'cost'],
         status: 'published',

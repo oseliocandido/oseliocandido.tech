@@ -50,7 +50,7 @@
                     <span>·</span>
                     <span>Jan 27, 2026</span>
                     <span>·</span>
-                    <span>11 min read</span>
+                    <span>12 min read</span>
                 </div>
             </div>
 
@@ -66,6 +66,13 @@
                     That coupling showed up in two distinct ways. On the reliability side, a slow or stuck task on one job could hold the shared cluster in a state that delayed or destabilized an unrelated job's run. On the cost side, the cluster's size was a single compromise value — big enough for the heaviest workload that ever touched it, which meant every lighter job was paying for capacity it didn't need, and nothing about the cluster's shape was recorded anywhere as a deliberate choice for any particular workload.
                 </p>
 
+<pre><code class="language-text">Before                              After
+
+  job A ┐                            job A → ephemeral cluster A
+  job B ├─→ one shared cluster       job B → ephemeral cluster B
+  job C ┘   (always warm)            job C → ephemeral cluster C
+                                              (created, used, torn down)</code></pre>
+
                 <div class="flow-diagram">
                     <div class="flow-diagram__node">Job run triggered</div>
                     <div class="flow-diagram__arrow"></div>
@@ -80,7 +87,7 @@
                     <div class="flow-diagram__arrow"></div>
                     <div class="flow-diagram__node">Ephemeral cluster provisioned<small>spot-with-fallback</small></div>
                     <div class="flow-diagram__arrow"></div>
-                    <div class="flow-diagram__node">All job tasks run on this cluster</div>
+                    <div class="flow-diagram__node">All tasks sharing this job_cluster_key run on this cluster</div>
                     <div class="flow-diagram__arrow"></div>
                     <div class="flow-diagram__node">Cluster torn down at job end</div>
                 </div>
@@ -105,7 +112,7 @@ job_clusters:
     new_cluster: ${var.medium_cluster}</code></pre>
 
                 <p>
-                    That <code>${var.medium_cluster}</code> reference is where the reusability comes from. Databricks Asset Bundles support a <code>type: complex</code> variable — effectively a whole object literal that any job can reference and get back verbatim. That's the mechanism that turns "one cluster spec per job" into "a small library of named presets every job pulls from":
+                    The cluster Databricks creates from that reference is still ephemeral — spun up at run start, torn down at run end, same as before. What's actually reusable is the specification behind <code>${var.medium_cluster}</code>, not the cluster itself: a named preset that any job can point at and get the same object back verbatim. That <code>${var.medium_cluster}</code> reference is where the reusability comes from. Databricks Asset Bundles support a <code>type: complex</code> variable — effectively a whole object literal that any job can reference and get back verbatim. That's the mechanism that turns "one cluster spec per job" into "a small library of named presets every job pulls from":
                 </p>
 
 <pre><code class="language-yaml">variables:
@@ -215,7 +222,7 @@ job_clusters:
                 <ul>
                     <li><strong>Small — <code>Standard_D4ds_v5</code>, 1-2 workers.</strong> General-purpose compute, sized for lightweight ETL and low-volume incremental loads where the bottleneck is task orchestration overhead, not CPU or shuffle.</li>
                     <li><strong>Medium — <code>Standard_D16ds_v5</code>, 2-5 workers.</strong> The workhorse tier, used by the shuffle-heavy transformation stages in the daily ingestion pipelines. <code>Standard_D16ds_v5</code> is a general-purpose node with enough cores and memory per executor to handle those joins without falling over on spill, while the 2-5 autoscale range absorbs the difference between a normal daily volume and a heavier catch-up run without needing a separate cluster definition.</li>
-                    <li><strong>Large — <code>Standard_E48ds_v5</code>, 1-3 workers, memory-optimised.</strong> Reserved for full-history reprocessing and memory-intensive joins where the constraint is RAM per executor, not worker count — hence the narrower 1-3 autoscale range on a much larger node. The driver node type is deliberately set to match the worker type (<code>driver_node_type_id: Standard_E48ds_v5</code>) so the driver doesn't become the bottleneck when collecting or broadcasting large intermediate results, which is a real risk on memory-heavy jobs if the driver is left at a smaller default size.</li>
+                    <li><strong>Large — <code>Standard_E48ds_v5</code>, 1-3 workers, memory-optimised.</strong> Reserved for full-history reprocessing and memory-intensive joins where the constraint is RAM per executor, not worker count — hence the narrower 1-3 autoscale range on a much larger node. The driver node type is deliberately set to match the worker type (<code>driver_node_type_id: Standard_E48ds_v5</code>) so a memory-intensive workload doesn't introduce an undersized driver as a separate bottleneck — a real risk on these jobs if the driver were left at a smaller default size. That's a mitigation for driver-side memory pressure in general, not a license to <code>collect()</code> large datasets to the driver; a job that actually needs to do that usually has an application-design problem no amount of driver sizing fixes.</li>
                 </ul>
 
                 <p>
@@ -239,7 +246,7 @@ job_clusters:
                 <h3>Making Notebook Initialization Portable</h3>
 
                 <p>
-                    Sizing and cost were only half the change. The other half was the notebook every job runs first to install the platform's Python packages before any transformation logic executes. Before this work, the proxy URL used for pip installs was a literal hardcoded string sitting in the notebook itself, alongside a secret lookup that always went to the workspace secret scope regardless of whether an environment variable had already been injected by the job cluster's <code>spark_env_vars</code>:
+                    A compute preset isn't actually finished once it's sized and priced — it's finished once a workload can run against it without carrying environment-specific assumptions of its own. Sizing and cost were only half the change. The other half was the notebook every job runs first to install the platform's Python packages before any transformation logic executes. Before this work, the proxy URL used for pip installs was a literal hardcoded string sitting in the notebook itself, alongside a secret lookup that always went to the workspace secret scope regardless of whether an environment variable had already been injected by the job cluster's <code>spark_env_vars</code>:
                 </p>
 
 <pre><code class="language-python"># before
@@ -284,6 +291,15 @@ PLATFORM_PYTHON_PACKAGE_PROXY = os.environ['PLATFORM_PYTHON_PACKAGE_PROXY']</cod
 
                 <p>
                     The bigger, less immediately visible result is structural: compute sizing became something reviewable in a diff instead of an ad-hoc decision made once and never revisited. Adding a new job now means picking one of three named presets rather than opening a conversation about node types and autoscale bounds, and a shared config change — a proxy URL, a tenant identifier — is a one-line edit to a single anchor instead of a hunt through every job's cluster block to make sure none of them drifted.
+                </p>
+
+                <p>
+                    The underlying shift, stated as a conceptual model rather than a literal billing formula, is where cost gets attributed:
+                </p>
+<pre><code class="language-text">Shared cluster:    cost ≈ cluster_size × time_alive           (attributed to nothing in particular)
+Job clusters:       cost ≈ Σ (job_compute_size × job_runtime)  (attributed to a specific job run)</code></pre>
+                <p>
+                    Compute cost stopped being a property of a cluster nobody owned and became a property of the job that actually ran.
                 </p>
 
             </article>
