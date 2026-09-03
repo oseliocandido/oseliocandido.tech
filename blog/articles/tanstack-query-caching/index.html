@@ -53,14 +53,15 @@
                     <span>·</span>
                     <span>Jul 2026</span>
                     <span>·</span>
-                    <span>8 min read</span>
+                    <span>11 min read</span>
                 </div>
             </div>
 
             <article class="article-page__body">
 
                 <h2>The problem</h2>
-                <p>The default instinct in most React frontends is to hit the API for every frontend action — a click, a form submission, a page navigation, a filter change, a tab regaining focus and refetching "just in case." None of that tracks real freshness — it's a guess dressed up as a safety margin. A filter toggle in the ERP's products screen was exactly that: flip a filter, wait for a request; flip it back, wait again, for data already downloaded seconds earlier. Simply caching the last response isn't enough on its own, though — caching that goes stale silently is worse than over-fetching. If a user creates a product and the list keeps showing the old count, the cache isn't saving a request, it's lying. The real requirement was to cache aggressively enough that repeat interactions are free, while knowing precisely which cached entries a given write actually invalidates.</p>
+                <p>The default instinct in most React frontends is to hit the API for every frontend action — a click, a form submission, a page navigation, a filter change, a tab regaining focus and refetching "just in case." The problem is that those mechanisms don't know whether the underlying data changed. They use time or UI events as proxies for freshness. A filter toggle in the ERP's products screen was exactly that: flip a filter, wait for a request; flip it back, wait again, for data already downloaded seconds earlier. Simply caching the last response isn't enough on its own, though — caching that goes stale silently is worse than over-fetching. If a user creates a product and the list keeps showing the old count, the cache isn't saving a request, it's lying.</p>
+                <blockquote>Caching aggressively is easy. Caching aggressively while knowing exactly when the cache has become untrustworthy is the real problem. The requirement here was to cache aggressively enough that repeat interactions are free, while knowing precisely which cached entries a given write actually invalidates.</blockquote>
                 <p>That's easy to get wrong because products and purchase orders are related in more than one direction — the reorder recommendations screen reads both current stock levels and open orders to decide what to suggest buying. When a product's stock changes, the cached recommendations are no longer trustworthy, even though no order changed. But a product edit has no bearing on an unrelated products query, and refetching that anyway is wasted work.</p>
 
                 <figure>
@@ -76,7 +77,7 @@
                     <li><strong>Manual refetch-on-focus or a fixed polling interval.</strong> Refetches on a schedule or event with no relationship to whether the data changed. Neither interval can be tuned to be "right," because the real signal — did a mutation happen that affects this data — is available and being ignored in favor of a timer.</li>
                     <li><strong>Manual state plus hand-rolled refetch logic.</strong> Call a <code>refreshProducts()</code>-style function wherever a mutation might affect it. Full control, but every new screen has to remember to call it; miss one and you get silent staleness with no error to catch it.</li>
                     <li><strong>A general-purpose in-memory cache keyed by URL or endpoint name.</strong> Solves "forgot to refetch" but reintroduces coarseness: distinguishing a filtered variant means building key-composition logic by hand — most of what a real query cache does anyway.</li>
-                    <li><strong>TanStack Query.</strong> A cache keyed by a structured value you control, where <code>staleTime</code> decides whether a subscriber gets the cached entry or triggers a fetch, and invalidation matches by key.</li>
+                    <li><strong>TanStack Query.</strong> A cache keyed by a structured value you control, where <code>staleTime</code> defines how long an entry is considered fresh, and invalidation matches by key to mark specific entries stale regardless of that clock.</li>
                 </ul>
                 <p>The deciding factor wasn't "more features." <code>staleTime</code> plus keyed invalidation replaces both blunt instruments with a model where freshness is a property of the cache entry — has something invalidated this key since it was fetched — not a property of the clock or window focus.</p>
 
@@ -107,11 +108,40 @@ export const useProduct = (productId: number) =>
   queryClient.invalidateQueries({ queryKey: ['products'] });
   queryClient.invalidateQueries({ queryKey: ['inventory-recommendations'] });
 },</code></pre>
-                <p><code>['products']</code> on its own is a prefix — TanStack Query matches it against every key that starts with that value, so every filtered variant currently cached gets marked stale in one call. Whichever one is on screen refetches immediately; the rest refetch next time someone navigates to them.</p>
+                <p><code>['products']</code> on its own is a prefix — TanStack Query matches it against every key that starts with that value, so every filtered variant currently cached gets marked stale in one call:</p>
+                <pre><code class="language-text">['products']
+    │
+    ├── ['products', { status: 'active' }]
+    ├── ['products', { status: 'inactive' }]
+    ├── ['products', { low_stock_only: true }]
+    └── ['products', { status: 'active', low_stock_only: true }]</code></pre>
+                <p>Invalidating the prefix means every cached representation of products is now potentially stale, without knowing or caring how many filtered variants happen to exist. Whichever one is on screen refetches immediately; the rest are marked stale and refetch the next time someone navigates to them — "stale" and "refetches now" are two different steps, not one:</p>
+                <pre><code class="language-text">Mutation
+   │
+   ▼
+invalidateQueries()
+   │
+   ▼
+cached data → STALE
+   │
+   ├── actively observed → refetches
+   │
+   └── inactive → waits until subscribed again</code></pre>
                 <p>The second call is easy to forget: a product create or edit also invalidates <code>['inventory-recommendations']</code>, even though no order record changed. That's a cross-entity dependency — recommendations reading from product data — and nothing in the type system flags it automatically, so it's encoded explicitly in every product mutation's <code>onSuccess</code>.</p>
-                <p>The order side runs the other direction, scoped even further: creating or updating an order also invalidates <code>['inventory-recommendations']</code>, but with <code>refetchType: 'none'</code> rather than an immediate refetch. That query backs onto a CTE expensive enough that firing it after every order write — most of which never touch the recommendations screen in the same session — would be wasted database load. <code>refetchType: 'none'</code> marks the entry stale without an eager refetch; the next component that subscribes to that key sees the stale flag and fetches then, instead of the invalidation itself firing a request nobody's waiting on.</p>
+                <p>The order side runs the other direction, scoped even further: creating or updating an order also invalidates <code>['inventory-recommendations']</code>, but with <code>refetchType: 'none'</code> rather than an immediate refetch. That query backs onto a CTE expensive enough that firing it after every order write — most of which never touch the recommendations screen in the same session — would be wasted database load. <code>refetchType: 'none'</code> marks the entry stale without an eager refetch, which is the "inactive" branch above made deliberate rather than incidental: the next component that subscribes to that key sees the stale flag and fetches then, instead of the invalidation itself firing a request nobody's waiting on. That's not merely caching — it's controlling the synchronization policy per query.</p>
                 <blockquote>The value of a query key isn't that it's unique — it's that it's structured enough to invalidate a slice of the cache without invalidating the whole thing. A flat cache keyed by URL can only ever answer "clear this endpoint or don't"; a composite key can answer "clear every products list, but leave the recommendations query stale-and-deferred rather than eagerly re-run."</blockquote>
-                <p><code>useUpdateOrder</code> also calls <code>setQueryData</code> to patch the single-entity <code>['order', orderId]</code> cache entry in place with the mutation's own response, skipping a round trip and a loading flicker, before invalidating the list views the order might also appear in. That works because it's exactly one entry and the response is the correct new value for it. <code>['orders', params]</code> can have any number of live variants, and there's no way to know which filtered result sets the order belongs in or dropped out of, so invalidating and letting each variant refetch avoids re-deriving filter logic client-side. In-place patching only makes sense for a single known entry; everywhere else, invalidation is the rule.</p>
+                <p><code>useUpdateOrder</code> also calls <code>setQueryData</code> to patch the single-entity <code>['order', orderId]</code> cache entry in place with the mutation's own response, skipping a round trip and a loading flicker, before invalidating the list views the order might also appear in. That works because it's exactly one entry and the response is the correct new value for it. <code>['orders', params]</code> can have any number of live variants, and there's no way to know which filtered result sets the order belongs in or dropped out of, so invalidating and letting each variant refetch avoids re-deriving filter logic client-side. In-place patching only makes sense for a single known entry; everywhere else, invalidation is the rule — a distinction general enough to reuse outside this codebase:</p>
+                <table>
+                    <thead>
+                        <tr><th>Situation</th><th>Strategy</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Exact entity whose new representation you already have (a mutation's own response)</td><td><code>setQueryData</code></td></tr>
+                        <tr><td>Collection containing that entity</td><td>Invalidate</td></tr>
+                        <tr><td>Unknown filtered projections of it</td><td>Invalidate</td></tr>
+                        <tr><td>Expensive derived query with no active viewer</td><td>Invalidate with <code>refetchType: 'none'</code></td></tr>
+                    </tbody>
+                </table>
 
                 <h3>The QueryClient: one policy, inherited everywhere</h3>
                 <p>The key-scoping and invalidation discipline above only stays legible if retry and freshness rules are the same across every screen. That's what the <code>QueryClient</code> instance is for — a single object, created once, that every <code>useQuery</code> and <code>useMutation</code> inherits its defaults from:</p>
@@ -139,18 +169,44 @@ export const queryClient = new QueryClient({
 });</code></pre>
                 <p>Each option is a separate decision, not a bundle copied from a template:</p>
                 <ul>
-                    <li><strong><code>queries.retry</code> (function, not a count).</strong> The default is "retry 3 times regardless," wrong here since client errors like validation (422) or authorization (403) won't succeed on retry. Returns <code>false</code> for any 400–499 status; anything else gets up to two retries.</li>
+                    <li><strong><code>queries.retry</code> (function, not a count).</strong> The default is "retry 3 times regardless," wrong here since client errors like validation (422) or authorization (403) won't succeed on retry. For this API, ordinary 4xx responses represent client-side failures that won't succeed by retrying, so retries are disabled for the whole 400–499 range; anything else gets up to two retries. That's a property of this API, not a universal rule — a <code>429 Too Many Requests</code> is a 4xx where retrying, especially with a server-supplied <code>Retry-After</code>, can be exactly right, and some APIs give 408/409 different semantics. Where an API exposes explicitly retryable statuses, they'd need to be carved out of this range rather than assumed away.</li>
                     <li><strong><code>queries.retryDelay</code>.</strong> Exponential backoff (1s, 2s, 4s...) capped at 10 seconds, so a flaky connection doesn't compound into a long wait.</li>
-                    <li><strong><code>queries.staleTime: 30_000</code>.</strong> Not "refetch every 30 seconds" — "treat data less than 30 seconds old as fresh." It doesn't eliminate mount/focus/reconnect refetches; it changes when they're necessary — cache hits while fresh, real synchronization once stale.</li>
+                    <li><strong><code>queries.staleTime: 30_000</code>.</strong> Not "refetch every 30 seconds" — "treat data less than 30 seconds old as fresh." While an entry is fresh, the ordinary refetch triggers below don't need to run it; explicit invalidation can still mark that same entry stale immediately, before its 30 seconds are up, because invalidation and the staleness clock are two independent ways an entry ends up stale.</li>
                     <li><strong><code>refetchOnWindowFocus</code> / <code>refetchOnMount</code> / <code>refetchOnReconnect</code> (all <code>true</code>).</strong> The safety net under <code>staleTime</code>: past the stale window, these fetch the update, but unlike a naive focus listener, only when already stale.</li>
-                    <li><strong><code>gcTime</code> (library default, five minutes).</strong> <code>staleTime</code> controls refetch-on-subscribe; <code>gcTime</code> controls how long an entry survives once nothing subscribes at all. Under five minutes, the last-known list still renders instantly; longer, and it's garbage-collected.</li>
-                    <li><strong><code>mutations.retry: false</code>.</strong> Writes often aren't idempotent, so retrying an ambiguous failure risks a duplicate side effect.</li>
+                    <li><strong><code>gcTime</code> (library default, five minutes).</strong> A different question from <code>staleTime</code>, and the two are easy to conflate: <code>staleTime</code> asks "can I trust this data," <code>gcTime</code> asks "should I keep this unused data around at all." <code>staleTime</code> controls refetch-on-subscribe for data still in the cache; <code>gcTime</code> controls how long an entry survives once nothing subscribes to it at all. Under five minutes, the last-known list still renders instantly on return; longer than that, and it's garbage-collected, so the next subscriber starts from nothing.</li>
+                    <li><strong><code>mutations.retry: false</code>.</strong> Several writes in this app aren't guaranteed to be idempotent, so retrying an ambiguous failure risks a duplicate side effect — a create fired twice reads as two orders. The deeper rule is idempotency, not "never retry mutations": an idempotent <code>PUT</code>, or a create with a server-checked idempotency key, could safely retry; a bare <code>POST</code> creating an order after an ambiguous network failure can't.</li>
                     <li><strong><code>mutations.networkMode: 'online'</code>.</strong> Holds a mutation paused while offline instead of firing into immediate failure.</li>
                 </ul>
                 <p>The same <code>queryClient</code> is created once and handed to a single <code>QueryClientProvider</code> at the app root, which is what makes cross-domain invalidation possible in the first place.</p>
 
                 <h2>The outcome</h2>
                 <p>Switching a filter, or navigating back to an already-visited screen, stopped triggering a request when the underlying data hadn't changed — the network tab went from a request per interaction to a request per interaction that actually needed one. Just as important, the cache stopped being something to distrust: because invalidation is declared at the point of the mutation rather than left to individual screens to remember, a new screen reading product data gets correct behavior the first time it subscribes to that query key, with no additional wiring. The same pattern paid off on the orders side almost for free.</p>
+                <blockquote>A cache is useful only when the application knows when it has become wrong.</blockquote>
+                <p>Every piece above is an answer to a different part of that sentence:</p>
+                <pre><code class="language-text">Query key
+    ↓
+Identity of cached data
+
+staleTime
+    ↓
+How long we consider it fresh
+
+Mutation
+    ↓
+What changed?
+
+Invalidation
+    ↓
+Which cached representations are now suspect?
+
+setQueryData
+    ↓
+Which exact representation can we safely update in place?
+
+gcTime
+    ↓
+How long do we retain unused knowledge?</code></pre>
+                <p>None of this was really about learning TanStack Query's API surface. It's the same lesson as the other two: the framework feature isn't the point — making the system's boundaries and responsibilities explicit is.</p>
 
                 <figure>
                     <img src="images/dashboard-filter.png" alt="Dashboard screen with a date-range filter and cached summary metrics (active staff, pending orders, low stock, cash, missing clock-ins)" loading="lazy">

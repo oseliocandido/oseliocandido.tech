@@ -156,7 +156,7 @@ window.ARTICLES = [
         title: "Designing a Trustworthy Frontend Cache with TanStack Query",
         desc: "Why refiltering a list shouldn't refetch it, and why invalidating that cache after a write still has to be scoped: query keys built from filter params, and invalidation that targets exactly what changed.",
         date: '2026-07-15',
-        readTime: 8,
+        readTime: 11,
         discipline: 'frontend-ux',
         tags: ['react', 'tanstack-query', 'caching'],
         status: 'published',
