@@ -53,7 +53,7 @@
                     <span>·</span>
                     <span>Jul 2026</span>
                     <span>·</span>
-                    <span>6 min read</span>
+                    <span>7 min read</span>
                 </div>
             </div>
 
@@ -62,13 +62,13 @@
                 <h2>The problem</h2>
                 <p>An application server sitting directly on the internet has to spend its own CPU cycles deciding whether every request is legitimate. A login endpoint with no rate limiting will happily accept a credential-stuffing script's ten thousand attempts a minute, burning database connections and process time on traffic that should never have reached the app in the first place.</p>
                 <p>A public contact form with no throttling has the same problem in a different shape: it becomes a free spam relay, and every submission still walks the full request pipeline — validation, mail dispatch, logging — before anyone decides it was junk.</p>
-                <p>Neither of these is an application-logic problem. They're edge problems, and solving them inside the app means paying their cost in the app's own resources instead of rejecting the traffic before it arrives.</p>
+                <p>Rejecting a flood before it's authenticated doesn't need any application context — no account, no session, nothing the app knows that nginx doesn't. That's what makes it an edge problem worth solving at the edge, rather than paying its cost in the app's own resources: the first layer of defense here is coarse and identity-blind on purpose.</p>
 
                 <h2>What is a leaky bucket rate limiter</h2>
-                <p>Nginx's <code>limit_req</code> module implements the <strong>leaky bucket</strong> algorithm. Picture a bucket with a hole: requests pour in at whatever rate the client sends them, and they leak out — get processed — at a fixed rate you configure. If requests arrive faster than the hole drains, the bucket fills; when it overflows, requests are rejected.</p>
+                <p>Nginx's <code>limit_req</code> module implements the <strong>leaky bucket</strong> algorithm — but the literal picture (a bucket with a hole, requests leaking out and getting processed at a fixed rate) only describes the default, no-<code>nodelay</code> mode, where excess requests are queued and drained at that steady rate. That's not what's configured below. With <code>nodelay</code> set, nginx admits every request within the configured rate and burst immediately — nothing is metered out at a fixed pace — and only rejects what's left over once the burst allowance is also exhausted. The bucket still exists as the accounting model (it's what tracks how much of the allowance is currently used), it just isn't imposing a delay on the requests it lets through.</p>
                 <p>Two concepts do all the work:</p>
                 <ul>
-                    <li><strong>The zone</strong> — shared memory where nginx tracks per-key state. Keying on <code>$binary_remote_addr</code> means one bucket per client IP; a 10&nbsp;MB zone holds state for roughly 160,000 addresses.</li>
+                    <li><strong>The zone</strong> — shared memory where nginx tracks per-key state. Keying on <code>$binary_remote_addr</code> means one bucket per client IP; a 10&nbsp;MB zone holds state for roughly 160,000 addresses. That state is local to the nginx process holding it — two nginx instances each running this config keep two independent buckets, not one shared 5&nbsp;req/min limit across both. For a single-box deployment that's a non-issue; behind a load balancer fronting multiple app servers, a per-IP limit enforced this way is really "N times the configured rate," and getting back to one true global limit needs a shared store (Redis, most commonly) instead of nginx's in-process zone.</li>
                     <li><strong>Burst + nodelay</strong> — real traffic is spiky. <code>burst</code> is the bucket's depth: how many requests over the steady rate are tolerated. <code>nodelay</code> says "serve burst requests immediately instead of queuing them" — excess beyond the burst is rejected with an error, not delayed.</li>
                 </ul>
                 <p>For comparison, a <em>token bucket</em> — the other classic algorithm, used by many API gateways — accumulates permission over idle time, allowing genuine bursts at full speed. Nginx's leaky bucket with <code>nodelay</code> behaves almost identically in practice, which matters for what comes next: it meant reaching for the module nginx already ships with, instead of a heavier piece of middleware.</p>
@@ -80,7 +80,18 @@
                     <li><strong>A dedicated API gateway or WAF</strong> (Kong, Cloudflare, AWS API Gateway) — offers richer rules, geo-based limits, bot scoring. For a single-box deployment this is real infrastructure and cost for a problem two lines of nginx config solve just as well at the traffic volumes involved.</li>
                     <li><strong>No rate limiting, rely on infrastructure-level DDoS protection</strong> — covers volumetric floods but does nothing for a low-and-slow credential-stuffing attempt that looks like ordinary traffic to a network-layer filter.</li>
                 </ul>
-                <p>Given a single-box deployment already running nginx as a reverse proxy in front of the app, the edge was already there — the question was whether to use it or bypass it.</p>
+                <table>
+                    <thead>
+                        <tr><th>Approach</th><th>Strength</th><th>Cost</th></tr>
+                    </thead>
+                    <tbody>
+                        <tr><td>Nginx <code>limit_req</code></td><td>Cheap, rejects before the app</td><td>Mostly IP-scoped, no account context</td></tr>
+                        <tr><td>Application-level</td><td>Knows user/account</td><td>App still pays for every rejected request</td></tr>
+                        <tr><td>Redis-backed</td><td>Shared state across instances</td><td>Extra infrastructure to run and operate</td></tr>
+                        <tr><td>API gateway / WAF</td><td>Rich rules, distributed edge</td><td>Infrastructure and cost overkill at this scale</td></tr>
+                    </tbody>
+                </table>
+                <p>Given a single-box deployment already running nginx as a reverse proxy in front of the app, the edge was already there — the question was whether to use it or bypass it. That framing matters: the choice below is right for this deployment, not a claim that nginx is the general answer to rate limiting.</p>
 
                 <h2>The decision</h2>
                 <p>Not every endpoint needs limiting — the dangerous ones are authentication (credential stuffing) and the public contact form (spam). This is the actual config, from the host nginx file in front of the FastAPI backend on <code>127.0.0.1:8001</code>. Each endpoint got its own zone, sized to how abusive traffic against it actually looks:</p>
@@ -111,7 +122,7 @@ location = /api/contact {
     proxy_send_timeout 10s;
     proxy_read_timeout 10s;
 }</code></pre>
-                <p>Reading the login numbers: a client may make 5 auth requests per minute sustained, with 3 extra tolerated in a spike — plenty for a human who mistypes a password twice and then finds their TOTP code, hopeless for a script trying a password list. Rejected requests get <code>429 Too Many Requests</code> plus a <code>Retry-After: 60</code> header, so well-behaved clients know exactly what to do, and the app process never spends a single CPU cycle on the flood.</p>
+                <p>Reading the login numbers: a client may make 5 auth requests per minute sustained, with 3 extra tolerated in a spike — plenty for a human who mistypes a password twice and then finds their TOTP code, hopeless for a script trying a password list. Rejected requests get <code>429 Too Many Requests</code> plus a <code>Retry-After: 60</code> header — not a guarantee that the client will be accepted the instant 60 seconds elapse, since that depends on the bucket's state at the time, but an explicit signal that a well-behaved client should back off instead of retrying immediately. Rejecting them here also means those requests never traverse the application stack at all — no database connection, no password hashing, no app-process time spent on the flood, just a shared-memory lookup in nginx.</p>
                 <p>The two locations also carry different proxy timeouts — 5 seconds on <code>/api/auth/</code>, 10 on <code>/api/contact</code> — which isn't part of the rate-limiting logic itself, but reflects the same instinct: an auth check should be fast and fail fast, while a contact-form submission (which may trigger mail dispatch downstream) is given more room before nginx gives up on the upstream.</p>
 
                 <h3>Per-IP, not per-account</h3>

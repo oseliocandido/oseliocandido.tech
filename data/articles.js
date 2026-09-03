@@ -178,7 +178,7 @@ window.ARTICLES = [
         title: 'Leaky Buckets at the Edge: Rate Limiting Login and Contact Endpoints in Nginx',
         desc: 'Leaky-bucket rate limits on the login and contact endpoints with nginx limit_req — the alternatives considered, the config, and the blind spot worth naming.',
         date: '2026-07-15',
-        readTime: 6,
+        readTime: 7,
         discipline: 'devops',
         tags: ['nginx', 'security'],
         status: 'published',
