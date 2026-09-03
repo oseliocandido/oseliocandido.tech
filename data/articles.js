@@ -84,17 +84,6 @@ window.ARTICLES = [
         featured: false
     },
     {
-        slug: 'centralised-observability-framework',
-        title: 'Centralized Pipeline Observability in Databricks',
-        desc: "Embedding an automated log writer into a shared Databricks write path — schema, fail-safe execution, merge-aware row counts, cluster metadata, and the queries it makes possible.",
-        date: '2026-05-21',
-        readTime: 8,
-        discipline: 'data-engineering',
-        tags: [],
-        status: 'published',
-        featured: false
-    },
-    {
         slug: 'olap-performance-cost-optimisation',
         title: "Finding the Dimensions Nobody Was Using: SSAS Cube Pruning by Parsing the Cube's Own XML",
         desc: "A PowerShell script that parsed the cube's XML definition, a Python cross-reference against real usage, and a Power BI view of the gap — how unused dimensions were found and removed.",
