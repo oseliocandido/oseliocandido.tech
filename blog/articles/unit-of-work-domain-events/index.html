@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Unit of Work and Domain Events — Oselio Candido</title>
+    <meta name="description" content="Three places a side effect can run relative to a database commit — inside the transaction, after it, or on a queue — and why dispatching after commit, off the request path, was the trade actually made.">
+    <link rel="canonical" href="https://oseliocandido.tech/blog/articles/unit-of-work-domain-events/">
+    <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Oselio Candido">
+    <meta property="og:title" content="Unit of Work and Domain Events — Oselio Candido">
+    <meta property="og:description" content="Three places a side effect can run relative to a database commit — inside the transaction, after it, or on a queue — and why dispatching after commit, off the request path, was the trade actually made.">
+    <meta property="og:url" content="https://oseliocandido.tech/blog/articles/unit-of-work-domain-events/">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Unit of Work and Domain Events — Oselio Candido">
+    <meta name="twitter:description" content="Three places a side effect can run relative to a database commit — inside the transaction, after it, or on a queue — and why dispatching after commit, off the request path, was the trade actually made.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../../css/style.css">
+    <link rel="stylesheet" href="../../../css/components.css">
+    <link rel="stylesheet" href="../../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../../" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../../">Home</a></li>
+                <li><a href="../../../#about">About</a></li>
+                <li><a href="../../../blog/">Articles</a></li>
+                <li><a href="../../../#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Article -->
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">Backend Engineering</span>
+                <h1 class="article-page__title">Unit of Work and Domain Events: Where Should a Transaction End?</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Jul 2026</span>
+                    <span>·</span>
+                    <span>8 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <h2>The problem</h2>
+                <p>Marking a purchase order as received is, at its core, one database write: flip a status column. But it's never really just that — the supplier needs a notification, and possibly other side effects down the line. That side effect is not itself part of the transaction; a database doesn't roll back an email. So the actual question isn't "how do I write the status change," it's "relative to that write committing, when does the side effect happen" — and that question doesn't have a default answer. Get it wrong in one direction and an unrelated failure (a supplier's mail server timing out) blocks a status change that has nothing to do with email. Get it wrong in the other direction and the side effect silently never happens at all. This is the design question behind the purchase-orders module discussed in more architectural depth in a companion piece on <a href="../modular-monolith-ddd/">designing a modular monolith</a> — here it's worth pulling apart on its own.</p>
+
+                <h2>What a unit of work actually guarantees</h2>
+                <p><code>OrderService</code> owns the transaction boundary — nothing else; its own docstring says as much: "business rules live on the Order aggregate, not here." The transaction boundary itself is a plain async context manager, opened once per application operation, that commits on a clean exit and rolls back on any exception:</p>
+                <pre><code class="language-python">class InventoryUnitOfWork:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self.orders = OrderRepository(session)
+        self.products = ProductRepository(session)
+        self.suppliers = SupplierRepository(session)
+
+    async def __aenter__(self) -> Self:
+        await self._session.begin()
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        if exc_type is not None:
+            await self._session.rollback()
+        else:
+            await self._session.commit()</code></pre>
+                <p>That's what makes <code>async with self._uow:</code> meaningful rather than decorative — every repository reachable off the UoW shares the same session, so a write to <code>self._uow.orders</code> and a read from <code>self._uow.suppliers</code> inside the same block are part of one atomic unit, and any exception raised anywhere in the block rolls all of it back. Creating an order shows the pattern: open the unit of work, build the domain aggregate through its factory method, save it, then drain the events off the aggregate and dispatch them only once the transaction has closed:</p>
+                <pre><code class="language-python">async def create_order(self, supplier_id, items, expected_delivery_date):
+    async with self._uow:
+        supplier = await self._uow.suppliers.get_by_id(supplier_id)
+        domain_items = [OrderItem(product_id=i.product_id,
+                                   quantity=Decimal(str(i.quantity)),
+                                   unit_price=Decimal(str(i.unit_price)))
+                        for i in items]
+        entity = Order.create_order(supplier_id=supplier_id,
+                                     items=domain_items,
+                                     expected_delivery_date=expected_delivery_date)
+        events = entity.pull_events()
+        saved = await self._uow.orders.save(entity)
+
+    self._background_tasks.add_task(self._dispatcher.dispatch_all, events)
+    return self._build_response(saved, supplier_name)</code></pre>
+                <p>The events are pulled off the aggregate <em>before</em> commit but dispatched <em>after</em> — inside the <code>async with self._uow</code> block the transaction is still open; once that block exits cleanly the commit has happened, and only then does <code>background_tasks.add_task</code> schedule the dispatcher. If the transaction rolls back, those events are never dispatched, because they were never handed to the dispatcher in the first place — pulling them off the aggregate only puts them in a local variable, it doesn't publish anything.</p>
+
+                <h2>The alternatives</h2>
+                <p>An order being marked received triggers an unrelated side effect — a notification email to the supplier. Where that side effect runs relative to the database transaction is its own small design decision, and the three options aren't equivalent:</p>
+                <ul>
+                    <li><strong>Inside the transaction.</strong> Send the email (or call the notification service) from directly inside the <code>async with self._uow</code> block, before it commits. This buys the strongest consistency guarantee — the email only "happens" if the write actually commits — but it's the wrong trade for this case. It holds the transaction open for as long as the SMTP call takes, adding that latency directly to the request's response time, and it ties something that shouldn't matter to correctness — whether an email server answered in time — to whether an order can be marked received at all. A supplier's mail server timing out is not a reason to fail a status transition that already happened in the business's terms.</li>
+                    <li><strong>After the transaction, off the request path.</strong> Pull the events off the aggregate, let the transaction commit, then hand them to a dispatcher that runs once the response has already been sent. This is what the code actually does — no added latency, and consistency is preserved because a rolled-back transaction never hands its events over in the first place. The cost: it isn't durable. A crash or a failing handler between commit and dispatch loses the notification silently.</li>
+                    <li><strong>On a queue, consumed by a separate worker.</strong> Publish the event to a broker (Redis/RQ, SQS, RabbitMQ) instead of scheduling an in-process callback. This is the durable version of option two: the event survives a process restart because it lives in the broker, not in a Python list, and a failed delivery gets retried with backoff instead of just logged. It costs real operational surface — a broker to run, a worker to deploy, idempotency to design for since retries can run a handler more than once.</li>
+                </ul>
+
+                <h2>The decision</h2>
+                <p>What the code actually does is the middle option — dispatch <em>after</em> the transaction closes, off the request path:</p>
+                <pre><code class="language-python">class EventDispatcher:
+    def __init__(self) -> None:
+        self._handlers: dict[type, list[Callable]] = defaultdict(list)
+
+    def register(self, event_type: type, handler: Callable) -> None:
+        self._handlers[event_type].append(handler)
+
+    async def dispatch(self, event: Any) -> None:
+        for handler in self._handlers[type(event)]:
+            try:
+                await handler(event)
+            except Exception:
+                logger.exception("Handler %s failed for event %s",
+                                  handler.__qualname__, type(event).__name__)
+
+    async def dispatch_all(self, events: Iterable[Any]) -> None:
+        for event in events:
+            await self.dispatch(event)</code></pre>
+                <p><code>background_tasks.add_task</code> is FastAPI's own mechanism: the callable runs after the response has already been sent, in the same process, on the same event loop. That solves the latency problem — a customer clicking "receive" isn't waiting on an SMTP round-trip — and the commit-before-dispatch ordering solves the consistency problem, since a rolled-back transaction never hands its events to the dispatcher in the first place. It does not solve durability. <code>dispatch</code>'s <code>try/except Exception</code> is doing real work here: without it, one failing handler would crash a background task with nothing watching it. With it, the failure is logged — and then the event is gone. If the process restarts between commit and dispatch, or the notification handler raises because the supplier's mail server is down, that email is never sent and nothing retries it, because there was never anything durable holding the intent to send it — only an in-memory Python list, for the lifetime of one request.</p>
+                <blockquote>A dispatcher running after commit, off the request path, solves latency and consistency. It does not, on its own, solve durability — those are three separate properties, and it's worth being honest about which one a design actually buys.</blockquote>
+                <p>The more correct shape for this specific problem — one unrelated to whether the transaction boundary or the domain model itself is right — is a real message queue: publish the event to Redis/RQ, SQS, or RabbitMQ instead of scheduling an in-process callback, and let a separate worker process consume it:</p>
+                <pre><code class="language-python"># Not what this module does — illustrative, for contrast with dispatch_all above.
+async def dispatch_all(self, events: Iterable[Any]) -> None:
+    for event in events:
+        await self._queue.enqueue(
+            "orders.notify_supplier",
+            payload=event.to_dict(),
+            retry=Retry(max=5, interval=[10, 30, 60, 300, 900]),
+        )
+
+# A separate worker process, not the request/response cycle, does this:
+@worker.task("orders.notify_supplier", max_retries=5)
+async def notify_supplier(payload: dict) -> None:
+    await send_supplier_email(payload)</code></pre>
+                <p>A queue turns "logged and lost" into "retried with backoff, and parked in a dead-letter queue for inspection if it keeps failing" — the event survives a process restart because it's durable in the broker, not in a Python list. It also adds real operational surface: a broker to run and monitor, a worker process to deploy and scale independently of the API, and idempotency to think about, since retries mean a handler might run more than once for the same event. For a solo-built system at this traffic level, <code>BackgroundTasks</code> plus a logged exception was the trade actually made — good enough that a failed notification is a rare, loggable event rather than a silent one, but explicitly not the durable version of this pattern.</p>
+
+                <h2>The outcome</h2>
+                <p>Two of the three properties that matter here — latency and consistency — are structural guarantees rather than best-effort behavior: a request never waits on a downstream side effect, and a rolled-back transaction can never leak an event it shouldn't have raised, because dispatch only ever happens after a clean commit. The third — durability — is an explicit, documented gap rather than an assumed one: a crash in the narrow window between commit and dispatch loses a notification silently, and the fix, when the traffic or the stakes justify it, is a real queue rather than a bigger try/except. Knowing exactly which of the three properties a given design buys, and naming the one it doesn't, is worth more than picking whichever option looks the most sophisticated on a diagram.</p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../../">← Back to portfolio</a></p>
+        </div>
+    </footer>
+
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>

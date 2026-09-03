@@ -266,8 +266,19 @@ window.ARTICLES = [
         title: 'Designing a Modular Monolith: Architecture, Trade-offs, and Lessons Learned',
         desc: 'Domain, application, infrastructure, presentation — walked through with the real folder structure and real code of a purchase-orders module, not architecture theory.',
         date: '2026-07-15',
-        readTime: 21,
+        readTime: 16,
         discipline: 'architecture',
+        tags: ['ddd', 'fastapi'],
+        status: 'published',
+        featured: false
+    },
+    {
+        slug: 'unit-of-work-domain-events',
+        title: 'Unit of Work and Domain Events: Where Should a Transaction End?',
+        desc: 'Three places a side effect can run relative to a database commit — inside the transaction, after it, or on a queue — and why dispatching after commit, off the request path, was the trade actually made.',
+        date: '2026-07-15',
+        readTime: 8,
+        discipline: 'backend',
         tags: ['ddd', 'fastapi'],
         status: 'published',
         featured: false

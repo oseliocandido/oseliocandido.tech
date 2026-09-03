@@ -53,40 +53,17 @@
                     <span>·</span>
                     <span>Jul 2026</span>
                     <span>·</span>
-                    <span>21 min read</span>
+                    <span>16 min read</span>
                 </div>
             </div>
 
             <article class="article-page__body">
 
                 <h2>What DDD actually is</h2>
-                <p><strong>Domain-Driven Design</strong> is Eric Evans' answer to a specific problem: once a business's rules get complicated enough, the code that expresses those rules deserves to be a first-class citizen of the codebase, modeled in its own vocabulary, rather than dissolved into database columns and controller logic. The tactical piece of DDD — the piece this whole article is about — is a small vocabulary of building blocks: <strong>entities</strong> (objects with identity and a lifecycle, like an <code>Order</code>), <strong>value objects</strong> (immutable, identity-less, like an <code>OrderItem</code>'s quantity and price), and <strong>aggregates</strong> (a cluster of entities and value objects with one root that's the only door in — nothing outside touches an <code>OrderItem</code> except through its parent <code>Order</code>). Layering — domain, application, infrastructure, presentation — is the architectural consequence of taking that vocabulary seriously: if the domain model is supposed to be the authority on business rules, it can't also depend on a database driver or a web framework, or that authority quietly moves to whatever ORM query happens to run first.</p>
-                <p>It's worth being upfront that DDD isn't the only way to structure this, and for a lot of systems it's the wrong one. Martin Fowler's own framing is that a <strong>Transaction Script</strong> — one procedure per use case, talking to the database directly or through a thin wrapper, no separate domain model at all — is perfectly fine for the majority of business systems where the logic per operation really is a short, linear checklist. Microsoft's own architecture guidance says the same thing from the other direction: reach for DDD when a domain is genuinely complex, not as a default. An <strong>Active Record</strong> or "Smart UI" style, where a model class is both the business object and its own persistence — Django models and Rails' <code>ActiveRecord</code> are the canonical examples — trades exactly the same thing away: less ceremony per change, at the cost of business rules and database concerns living in the same class, which is fine until the rules outgrow a single table's shape.</p>
-                <p>A third alternative sits further out: <strong>event sourcing</strong>, where a domain's state isn't stored directly at all — instead, every state change is appended as an immutable event, and the current state is whatever you get from replaying the event log from the start. Paired with <strong>CQRS</strong> (writes go through the event-sourced model, reads come from a separately maintained projection) and a message queue or pub/sub broker to fan those events out to other services, this is the shape a lot of event-driven microservice systems take. It's the natural fit for anything that's already conceptually a <strong>ledger</strong> — a bank account balance, or a stock-on-hand figure — where the "current state" was never really a single number to begin with, just the running total of every deposit, withdrawal, receipt, and sale that ever happened to it. A bank doesn't overwrite your balance column on every transaction; it appends a movement and the balance is <code>sum(movements)</code>, which is exactly what makes "what was my balance last Tuesday" a normal question to ask instead of an impossible one. Current stock in this ERP already works the same way conceptually — a product's stock level is the net of every order received, every sale, every manual adjustment — even though today it's persisted as a running column updated in place rather than derived by replaying a movement log.</p>
-                <p>I haven't used full event sourcing here — the orders module below stores current state directly and dispatches events only as a side effect, not as the source of truth — but it's worth sketching what it would look like, because the domain events this module already has (<code>OrderCreated</code>, <code>OrderReceived</code>, <code>OrderCancelled</code>) are one design decision away from becoming exactly that:</p>
-                <pre><code class="language-python"># Not what this module does — event sourcing, for contrast.
-# The event *is* the state; there's no `orders` row to update.
-class OrderReceived:
-    order_id: int
-    received_at: datetime
-
-def apply(order: OrderState, event: OrderReceived) -> OrderState:
-    return replace(order, status=OrderStatus.RECEIVED,
-                   delivery_date=event.received_at)
-
-# Rebuilding "the current order" means replaying its whole history:
-def rebuild(events: list[DomainEvent]) -> OrderState:
-    state = OrderState.empty()
-    for event in events:
-        state = apply(state, event)
-    return state
-
-# In a pub/sub system, that same OrderReceived event also gets
-# published to a broker (Kafka, SNS, RabbitMQ) so that, say, a
-# separate billing service can react without this module knowing
-# billing exists at all.
-broker.publish("orders.received", OrderReceivedIntegrationEvent(order_id=order.id))</code></pre>
-                <p>That model buys a full audit trail for free (every historical state is reconstructible) and lets independent services subscribe to what happened without coupling to how it's stored — genuinely valuable for a payment ledger or a multi-service pipeline. It also costs real complexity: replaying thousands of events to answer "what does this order look like right now" needs snapshotting to stay fast, and querying "all orders above $X" isn't a <code>WHERE</code> clause anymore, it's a projection you have to build and keep in sync. For a single-service module where the honest current-state question ("is this order still pending?") is asked far more often than "what was its full history," that trade wasn't worth making — which is exactly the kind of judgment call DDD's own literature says to make deliberately rather than by default.</p>
+                <p><strong>Domain-Driven Design</strong> is Eric Evans' answer to a specific problem: once a business's rules get complicated enough, the code that expresses those rules deserves to be a first-class citizen of the codebase, modeled in its own vocabulary, rather than dissolved into database columns and controller logic. The tactical piece of DDD — the piece this whole article is about — is a small vocabulary of building blocks: <strong>entities</strong> (objects with identity and a lifecycle, like an <code>Order</code>), <strong>value objects</strong> (immutable, identity-less, like an <code>OrderItem</code>'s quantity and price), and <strong>aggregates</strong> (a cluster of entities and value objects with one root that's the only door in — nothing outside touches an <code>OrderItem</code> except through its parent <code>Order</code>). The aggregate boundary isn't primarily about that containment, though — it marks which state changes have to be coordinated as a single consistency unit, which is why an item's price only gets validated in the context of the order it belongs to, never in isolation. Layering — domain, application, infrastructure, presentation — is the architectural consequence of taking that vocabulary seriously: keeping the domain model free of a database driver or a web framework is what keeps it the one place business-rule authority actually lives, the choice this article makes throughout, rather than letting that authority quietly move to whatever ORM query happens to run first.</p>
+                <p>It's worth being upfront that DDD isn't the only way to structure this, and for a lot of systems it's the wrong one. A <strong>Transaction Script</strong> — one procedure per use case, no separate domain model at all — is perfectly fine for the majority of business systems where the logic per operation really is a short, linear checklist. An <strong>Active Record</strong> or "Smart UI" style, where a model class is both the business object and its own persistence — Django models and Rails' <code>ActiveRecord</code> are the canonical examples — trades exactly the same ceremony away in the other direction: less boilerplate per change, at the cost of business rules and database concerns living in the same class.</p>
+                <p>A third alternative sits further out: <strong>event sourcing</strong>, where a domain's state isn't stored directly at all — every change is appended as an immutable event, and current state is whatever replaying that log produces. It's the natural fit for anything that's already conceptually a <strong>ledger</strong>, where the "current value" was never really an independently authoritative number to begin with, just something derived from history — a bank statement is the clearest example: the ledger of movements is the authoritative record, and a materialized current balance is a convenience derived from it, not a replacement for it. Current stock in this ERP works the same way conceptually, even though today it's persisted as a running column updated in place rather than derived by replaying a movement log.</p>
+                <p>This module doesn't do that: current state is stored directly, and the domain events it already raises (<code>OrderCreated</code>, <code>OrderReceived</code>, <code>OrderCancelled</code>) are dispatched as a side effect, not persisted as the source of truth — one design decision away from event sourcing, but not the decision made here. That trade was deliberate: replaying a full event history just to answer "is this order still pending?" needs snapshotting to stay fast, and querying "all orders above $X" stops being a <code>WHERE</code> clause and becomes a projection you have to build and keep in sync. Event sourcing gives you a persisted history of state-changing events, which can form the basis of a complete audit trail — it doesn't hand you one automatically; the events still have to be designed to carry what an audit actually needs. For a single-service module where the current-state question is asked far more often than the full-history question, that trade wasn't worth making.</p>
                 <p>The layered split without event sourcing still earns its ceremony, and the clearest single reason is unit testing. Because <code>Order</code> and <code>procurement_policy.py</code> below are plain Python objects with no framework or database import, a test for "can a received order be cancelled?" is a synchronous function call against a dataclass — no test database, no fixtures, no async test client. A change to a business rule shows up as a failing assertion in milliseconds, not as an integration test that has to provision a schema first. That property degrades in every alternative above roughly in proportion to how much the model is allowed to know about persistence: Active Record couples the two directly, Transaction Script never separates them to begin with, and only a domain layer with zero I/O keeps the rule and the round-trip to a database from ever being the same test.</p>
 
                 <p>Let's use a real module as the example throughout rather than staying abstract: the purchase-orders module in this ERP's inventory domain, at <code>modules/inventory/orders/</code>. Here's its full folder structure, unedited — the four DDD layers are literally the four top-level folders, and every code sample below is pulled from one of these files:</p>
@@ -152,7 +129,7 @@ class Order:
         self._change_status(OrderStatus.RECEIVED)
         self.delivery_date = self._clock.today()
         self._events.append(OrderReceived(order_id=self.id, ...))</code></pre>
-                <p>Two details are worth calling out because they're easy to get wrong. First, <code>OrderItem</code> is a frozen value object — quantity and unit price validate themselves in <code>__post_init__</code>, and the aggregate mutates an order's items by replacing the whole tuple rather than editing an item in place. Second, time isn't read from <code>datetime.now()</code> inside the aggregate; it comes through an injected <code>Clock</code> protocol, which is what lets <code>mark_received</code> be unit-tested with a fixed date instead of a real clock:</p>
+                <p>Two details are worth calling out because they're easy to get wrong. First, <code>OrderItem</code> is a frozen value object — quantity and unit price validate themselves in <code>__post_init__</code>, and the aggregate mutates an order's items by replacing the whole tuple rather than editing an item in place. It's modeled as a value object rather than an entity because it has no lifecycle independent of the order it belongs to — replacing an item means replacing the value, not mutating something that needs to keep its own identity across changes. Second, time isn't read from <code>datetime.now()</code> inside the aggregate; it comes through an injected <code>Clock</code> protocol, which is what lets <code>mark_received</code> be unit-tested with a fixed date instead of a real clock:</p>
                 <pre><code class="language-python">class Clock(Protocol):
     def today(self) -> date: ...
     def now(self) -> datetime: ...
@@ -180,7 +157,7 @@ class SystemClock:
                 <blockquote>A domain layer that can't be unit-tested without a database isn't a domain layer — it's a service layer wearing the folder name.</blockquote>
 
                 <h3>Application: orchestration, transactions, no business rules of its own</h3>
-                <p><code>OrderService</code> owns the transaction boundary and event dispatch — nothing else. Its own docstring says as much: "business rules live on the Order aggregate, not here." The transaction boundary itself is a plain async context manager, one per bounded context, that commits on a clean exit and rolls back on any exception:</p>
+                <p><code>OrderService</code> owns the transaction boundary — nothing else. Its own docstring says as much: "business rules live on the Order aggregate, not here." The transaction boundary itself is a plain async context manager, opened once per application operation within the inventory module, that commits on a clean exit and rolls back on any exception:</p>
                 <pre><code class="language-python">class InventoryUnitOfWork:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
@@ -197,25 +174,7 @@ class SystemClock:
             await self._session.rollback()
         else:
             await self._session.commit()</code></pre>
-                <p>That's what makes <code>async with self._uow:</code> meaningful rather than decorative — every repository reachable off the UoW shares the same session, so a write to <code>self._uow.orders</code> and a read from <code>self._uow.suppliers</code> inside the same block are part of one atomic unit, and any exception raised anywhere in the block rolls all of it back. Creating an order shows the pattern: open the unit of work, allocate a sequence-based order number inside that same transaction (so a rollback releases the sequence), build the domain aggregate through its factory method, save it, then drain and dispatch the events only after the transaction has closed:</p>
-                <pre><code class="language-python">async def create_order(self, supplier_id, items, expected_delivery_date):
-    async with self._uow:
-        order_number = await self._build_order_number()
-        supplier = await self._uow.suppliers.get_by_id(supplier_id)
-        domain_items = [OrderItem(product_id=i.product_id,
-                                   quantity=Decimal(str(i.quantity)),
-                                   unit_price=Decimal(str(i.unit_price)))
-                        for i in items]
-        entity = Order.create_order(supplier_id=supplier_id,
-                                     order_number=order_number,
-                                     items=domain_items,
-                                     expected_delivery_date=expected_delivery_date)
-        events = entity.pull_events()
-        saved = await self._uow.orders.save(entity)
-
-    self._background_tasks.add_task(self._dispatcher.dispatch_all, events)
-    return self._build_response(saved, supplier_name)</code></pre>
-                <p>The events are pulled off the aggregate <em>before</em> commit but dispatched <em>after</em> — inside the <code>async with self._uow</code> block the transaction is still open; once that block exits cleanly the commit has happened, and only then does <code>background_tasks.add_task</code> schedule the dispatcher. If the transaction rolls back, the events never fire, because they were never handed to the dispatcher in the first place. Nothing about <code>OrderService</code> above ever constructs its own dependencies — a separate file owns that:</p>
+                <p>That's what makes <code>async with self._uow:</code> meaningful rather than decorative — every repository reachable off the UoW shares the same session, so a write to <code>self._uow.orders</code> and a read from <code>self._uow.suppliers</code> inside the same block are part of one atomic unit, and any exception raised anywhere in the block rolls all of it back. What happens to the domain events an aggregate raises inside that block — when they actually get dispatched, and what happens to them if the transaction rolls back — is its own design question with real trade-offs, covered in a companion piece on <a href="../unit-of-work-domain-events/">unit-of-work transaction boundaries and domain-event dispatch</a>. Nothing about <code>OrderService</code> above ever constructs its own dependencies — a separate file owns that:</p>
                 <pre><code class="language-python"># application/bootstrap.py — composition root
 def build_order_service(
     db: AsyncSession, background_tasks: BackgroundTasks
@@ -233,49 +192,7 @@ def _build_dispatcher(query: OrderQueryService) -> EventDispatcher:
     dispatcher.register(OrderCancelled, handler.on_order_cancelled)
     return dispatcher</code></pre>
                 <p><code>bootstrap.py</code>'s own module docstring calls it out directly: "usable from HTTP, agents, workers, CLI." <code>build_order_service</code> takes a raw <code>AsyncSession</code> and a <code>BackgroundTasks</code> instance as its only inputs — nothing FastAPI-specific about the wiring itself, just the two objects a caller has to supply. A request handler gets both from FastAPI's dependency injection; a worker script would construct them directly. The same factory function is what makes an <code>OrderService</code> callable from the HTTP layer today and equally callable from a worker or a script tomorrow, since nothing about the wiring depends on a request being in flight.</p>
-
-                <h3>Where side effects run: inside the transaction, after it, or on a queue</h3>
-                <p>An order being marked received triggers an unrelated side effect — a notification email to the supplier. Where that side effect runs relative to the database transaction is its own small design decision, and the three options aren't equivalent:</p>
-                <ul>
-                    <li><strong>Inside the transaction.</strong> Send the email (or call the notification service) from directly inside the <code>async with self._uow</code> block, before it commits. This buys the strongest consistency guarantee — the email only "happens" if the write actually commits — but it's the wrong trade for this case. It holds the transaction open for as long as the SMTP call takes, adding that latency directly to the request's response time, and it ties something that shouldn't matter to correctness — whether an email server answered in time — to whether an order can be marked received at all. A supplier's mail server timing out is not a reason to fail a status transition that already happened in the business's terms.</li>
-                    <li><strong>After the transaction, off the request path.</strong> Pull the events off the aggregate, let the transaction commit, then hand them to a dispatcher that runs once the response has already been sent. This is what the code actually does — no added latency, and consistency is preserved because a rolled-back transaction never hands its events over in the first place. The cost: it isn't durable. A crash or a failing handler between commit and dispatch loses the notification silently.</li>
-                    <li><strong>On a queue, consumed by a separate worker.</strong> Publish the event to a broker (Redis/RQ, SQS, RabbitMQ) instead of scheduling an in-process callback. This is the durable version of option two: the event survives a process restart because it lives in the broker, not in a Python list, and a failed delivery gets retried with backoff instead of just logged. It costs real operational surface — a broker to run, a worker to deploy, idempotency to design for since retries can run a handler more than once.</li>
-                </ul>
-                <p>What the code actually does is the middle option — dispatch <em>after</em> the transaction closes, off the request path:</p>
-                <pre><code class="language-python">class EventDispatcher:
-    def __init__(self) -> None:
-        self._handlers: dict[type, list[Callable]] = defaultdict(list)
-
-    def register(self, event_type: type, handler: Callable) -> None:
-        self._handlers[event_type].append(handler)
-
-    async def dispatch(self, event: Any) -> None:
-        for handler in self._handlers[type(event)]:
-            try:
-                await handler(event)
-            except Exception:
-                logger.exception("Handler %s failed for event %s",
-                                  handler.__qualname__, type(event).__name__)
-
-    async def dispatch_all(self, events: Iterable[Any]) -> None:
-        for event in events:
-            await self.dispatch(event)</code></pre>
-                <p><code>background_tasks.add_task</code> is FastAPI's own mechanism: the callable runs after the response has already been sent, in the same process, on the same event loop. That solves the latency problem — a customer clicking "receive" isn't waiting on an SMTP round-trip — and the commit-before-dispatch ordering solves the consistency problem, since a rolled-back transaction never hands its events to the dispatcher in the first place. It does not solve durability. <code>dispatch</code>'s <code>try/except Exception</code> is doing real work here: without it, one failing handler would crash a background task with nothing watching it. With it, the failure is logged — and then the event is gone. If the process restarts between commit and dispatch, or the notification handler raises because the supplier's mail server is down, that email is never sent and nothing retries it, because there was never anything durable holding the intent to send it — only an in-memory Python list, for the lifetime of one request.</p>
-                <p>The more correct shape for this specific problem — one unrelated to whether the domain/application split itself is right — is a real message queue: publish the event to Redis/RQ, SQS, or RabbitMQ instead of scheduling an in-process callback, and let a separate worker process consume it:</p>
-                <pre><code class="language-python"># Not what this module does — illustrative, for contrast with dispatch_all above.
-async def dispatch_all(self, events: Iterable[Any]) -> None:
-    for event in events:
-        await self._queue.enqueue(
-            "orders.notify_supplier",
-            payload=event.to_dict(),
-            retry=Retry(max=5, interval=[10, 30, 60, 300, 900]),
-        )
-
-# A separate worker process, not the request/response cycle, does this:
-@worker.task("orders.notify_supplier", max_retries=5)
-async def notify_supplier(payload: dict) -> None:
-    await send_supplier_email(payload)</code></pre>
-                <p>A queue turns "logged and lost" into "retried with backoff, and parked in a dead-letter queue for inspection if it keeps failing" — the event survives a process restart because it's durable in the broker, not in a Python list. It also adds real operational surface: a broker to run and monitor, a worker process to deploy and scale independently of the API, and idempotency to think about, since retries mean a handler might run more than once for the same event. For a solo-built system at this traffic level, <code>BackgroundTasks</code> plus a logged exception was the trade actually made — good enough that a failed notification is a rare, loggable event rather than a silent one, but explicitly not the durable version of this pattern.</p>
+                <p><code>build_order_service</code> is also the module's actual public API in practice, not just its composition root: anything outside <code>orders/</code> — a router, a background job, another module's service — is expected to call through this factory rather than construct an <code>OrderService</code>, an <code>OrderRepository</code>, or reach for <code>OrderORM</code> directly. That's the mechanism that turns "modules interact through their application layer" from a diagram convention into something a code reviewer can actually check: does the import come from <code>orders.application.bootstrap</code>, or does it reach past it into <code>orders.infrastructure</code>? Only the first one is allowed to exist outside this folder.</p>
 
                 <h3>Infrastructure: repository, ORM models, and the mapper between them</h3>
                 <p><code>models.py</code> is where the table shape actually lives — SQLAlchemy columns, foreign keys, and a status <code>CheckConstraint</code> that mirrors the domain's own <code>OrderStatus</code> enum so an invalid status can't even be written directly against the database, bypassing the aggregate entirely:</p>
