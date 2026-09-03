@@ -222,7 +222,7 @@ window.ARTICLES = [
         title: 'Hashes That Upgrade Themselves: verify_and_update on Login',
         desc: "CryptContext with deprecated=\"auto\" re-hashes a user's password to the newest algorithm the moment they log in — algorithm migration with no reset campaign.",
         date: '2026-07-15',
-        readTime: 5,
+        readTime: 7,
         discipline: 'backend',
         tags: ['security'],
         status: 'published',
