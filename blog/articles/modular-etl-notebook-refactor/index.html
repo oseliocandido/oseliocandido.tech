@@ -4,17 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Breaking Apart a Monolithic ETL Codebase — Oselio Candido</title>
-    <meta name="description" content="A 639-line table-definitions file and a 394-line transform script. Restructuring a Databricks ETL pipeline by domain entity instead of technical layer.">
+    <meta name="description" content="Why we moved a Databricks ETL pipeline from file-per-layer to folder-per-entity — and the duplicated logic across nine staging transformations it exposed once the monolith split apart.">
     <link rel="canonical" href="https://oseliocandido.tech/blog/articles/modular-etl-notebook-refactor/">
     <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Oselio Candido">
     <meta property="og:title" content="Breaking Apart a Monolithic ETL Codebase — Oselio Candido">
-    <meta property="og:description" content="A 639-line table-definitions file and a 394-line transform script. Restructuring a Databricks ETL pipeline by domain entity instead of technical layer.">
+    <meta property="og:description" content="Why we moved a Databricks ETL pipeline from file-per-layer to folder-per-entity — and the duplicated logic across nine staging transformations it exposed once the monolith split apart.">
     <meta property="og:url" content="https://oseliocandido.tech/blog/articles/modular-etl-notebook-refactor/">
     <meta name="twitter:card" content="summary">
     <meta name="twitter:title" content="Breaking Apart a Monolithic ETL Codebase — Oselio Candido">
-    <meta name="twitter:description" content="A 639-line table-definitions file and a 394-line transform script. Restructuring a Databricks ETL pipeline by domain entity instead of technical layer.">
+    <meta name="twitter:description" content="Why we moved a Databricks ETL pipeline from file-per-layer to folder-per-entity — and the duplicated logic across nine staging transformations it exposed once the monolith split apart.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -44,7 +44,7 @@
             <div class="article-page__header">
                 <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
                 <span class="article-page__tag">Architecture</span>
-                <h1 class="article-page__title">Breaking Apart a Monolithic ETL Codebase: Folder-Per-Entity Instead of File-Per-Layer</h1>
+                <h1 class="article-page__title">Breaking Apart a Monolithic ETL Codebase: Why We Moved from File-Per-Layer to Folder-Per-Entity</h1>
                 <div class="article-page__meta">
                     <span>Oselio Candido</span>
                     <span>·</span>
@@ -57,24 +57,48 @@
             <article class="article-page__body">
 
                 <p>
-                    I wrote about restructuring a FastAPI backend as a <a href="../modular-monolith-ddd/">modular monolith</a> — domain, application, infrastructure, presentation, each module self-contained. This is the same underlying discipline applied somewhere that discipline doesn't usually get discussed: a Databricks ETL codebase, where the default organizing principle tends to be "group by technical layer," and the result was five files that had each grown into their own small monolith.
+                    I previously wrote about restructuring a FastAPI backend as a <a href="../modular-monolith-ddd/">modular monolith</a>: instead of organizing the codebase around technical layers, each business module owns its domain, application logic, infrastructure, and presentation.
                 </p>
 
-                <div class="flow-diagram">
-                    <div class="flow-diagram__branch">
-                        <div class="flow-diagram__node">tables_bus.py<small>639 lines, every bus table</small></div>
-                        <div class="flow-diagram__node">02_stage_to_bus.py<small>394 lines, every bus transformation</small></div>
-                    </div>
-                    <div class="flow-diagram__arrow"></div>
-                    <div class="flow-diagram__node">Restructure by entity</div>
-                    <div class="flow-diagram__arrow"></div>
-                    <div class="flow-diagram__node">bus/fact_order_fulfillment/<small>data.py + transformations.py, one folder</small></div>
-                </div>
+                <p>
+                    The same principle applies surprisingly well to ETL code.
+                </p>
+
+                <p>
+                    A Databricks pipeline naturally encourages organization by pipeline layer:
+                </p>
+
+<pre><code class="language-text">raw/
+stage/
+bus/
+serve/</code></pre>
+
+                <p>
+                    That makes sense at first. But as the number of tables grows, another question becomes more important:
+                </p>
+
+                <blockquote>What is the unit of change?</blockquote>
+
+                <p>
+                    In this pipeline, it was almost always a business entity or table.
+                </p>
+
+                <p>
+                    Yet the codebase was organized around technical layers.
+                </p>
+
+                <p>
+                    The result was predictable: a small number of files gradually became monoliths.
+                </p>
 
                 <h2>The Problem</h2>
 
                 <p>
-                    A warehouse-operations reporting pipeline had grown, table by table, into a structure organized around technical layer rather than business object: one file held every bus-layer table definition, another held every bus-layer transformation, and so on for stage and serve. By the time it needed a serious touch, two files anchored the bus layer, connected only by a naming convention someone had to already know:
+                    A warehouse-operations reporting pipeline had grown table by table into a structure where code was grouped by pipeline layer rather than by the business object it belonged to.
+                </p>
+
+                <p>
+                    By the time the pipeline needed a serious refactor, two files had effectively become small monoliths:
                 </p>
 
                 <table>
@@ -89,167 +113,780 @@
                         <tr>
                             <td><code>tables_bus.py</code></td>
                             <td>639</td>
-                            <td>Every bus-layer table definition — 11 fact and dimension tables, back to back</td>
+                            <td>Definitions for every bus-layer table</td>
                         </tr>
                         <tr>
                             <td><code>02_stage_to_bus.py</code></td>
                             <td>394</td>
-                            <td>Every bus-layer transformation — same 11 tables, different file, different order</td>
+                            <td>Transformations for those same tables</td>
                         </tr>
                     </tbody>
                 </table>
 
                 <p>
-                    The practical cost showed up in ordinary changes:
+                    There were eleven fact and dimension tables in the bus layer.
                 </p>
-
-                <ul>
-                    <li><strong>Two-file navigation for one-line changes.</strong> Adding a column to <code>fact_order_fulfillment</code> meant opening the 639-line file to find its eleven-line definition block, then opening the 394-line file to find its transformation logic somewhere else in file order.</li>
-                    <li><strong>Merge conflicts between unrelated changes.</strong> Two engineers touching different tables in the same sprint collided on <code>tables_bus.py</code> even though their actual changes never overlapped — resolving it meant verifying that eleven unrelated table definitions hadn't been scrambled together, not just the one either engineer cared about.</li>
-                </ul>
-
-                <div class="flow-diagram">
-                    <div class="flow-diagram__node">Change: add a column to fact_order_fulfillment</div>
-                    <div class="flow-diagram__branch">
-                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">schema</span>tables_bus.py<small>find it among 639 lines</small></div>
-                        <div class="flow-diagram__node"><span class="flow-diagram__branch__label">logic</span>02_stage_to_bus.py<small>find it among 394 lines</small></div>
-                    </div>
-                </div>
-
-                <h2>What Grouping-By-Layer Actually Costs</h2>
 
                 <p>
-                    Grouping by technical layer isn't an unreasonable instinct — it mirrors how the medallion architecture itself is described, raw / stage / bus / serve, and early on, when there were three tables instead of eleven, one file per layer was genuinely simpler than eleven small ones. The instinct just doesn't scale with table count, because a file organized by layer conflates two things that should be independent: how many tables exist (grows over time, unbounded) and how the codebase is organized (fixed, one file per layer, regardless of how many tables that file now holds). A monolithic table-definitions file only stays proportionate to the pipeline's actual complexity for as long as the pipeline stays small — past that point, file size becomes a function of table count, not of any actual coupling between those tables.
+                    The schema for <code>fact_order_fulfillment</code> lived somewhere inside one file. Its transformation logic lived somewhere else inside another.
                 </p>
 
-<pre><code class="language-python"># tables_bus.py — before (abbreviated: 639 lines, 11 tables, one file)
+                <p>
+                    The connection between them was mostly a naming convention.
+                </p>
+
+<pre><code class="language-text">tables_bus.py
+├── DimWarehouseDetails
+├── FactOrderFulfillment
+├── FactInventoryMovement
+├── ...
+└── 8 more tables
+
+02_stage_to_bus.py
+├── build_dim_warehouse_details()
+├── build_fact_order_fulfillment()
+├── build_fact_inventory_movement()
+├── ...
+└── 8 more transformations</code></pre>
+
+                <p>
+                    Changing one table meant navigating two unrelated regions of the repository.
+                </p>
+
+                <h3>A simple change</h3>
+
+                <p>
+                    Suppose I needed to add a column to <code>fact_order_fulfillment</code>.
+                </p>
+
+                <p>
+                    That meant:
+                </p>
+
+                <ol>
+                    <li>Open a 639-line file.</li>
+                    <li>Find the table definition among ten other tables.</li>
+                    <li>Modify the schema.</li>
+                    <li>Open a different 394-line file.</li>
+                    <li>Find the transformation for the same table.</li>
+                    <li>Modify the transformation.</li>
+                </ol>
+
+                <p>
+                    Neither file was conceptually about <code>fact_order_fulfillment</code>.
+                </p>
+
+                <p>
+                    Both were containers for <em>everything in the bus layer</em>.
+                </p>
+
+                <p>
+                    That distinction becomes important as the pipeline grows.
+                </p>
+
+                <h2>When Grouping by Layer Stops Scaling</h2>
+
+                <p>
+                    Grouping by technical layer is not inherently wrong.
+                </p>
+
+                <p>
+                    It mirrors how medallion architectures are normally described:
+                </p>
+
+<pre><code class="language-text">Raw → Stage → Bus → Serve</code></pre>
+
+                <p>
+                    And when the pipeline had only three tables, a file such as this was perfectly reasonable:
+                </p>
+
+<pre><code class="language-text">tables_bus.py</code></pre>
+
+                <p>
+                    One file was easier than creating several directories for a handful of tables.
+                </p>
+
+                <p>
+                    The problem appeared when table count grew.
+                </p>
+
+                <p>
+                    The structure of the codebase stayed fixed:
+                </p>
+
+<pre><code class="language-text">one file per layer</code></pre>
+
+                <p>
+                    while the amount of code inside that file grew with every new table.
+                </p>
+
+                <p>
+                    Those are two independent concerns:
+                </p>
+
+<pre><code class="language-text">Pipeline complexity → grows with table count
+Code organization   → stays fixed around pipeline layers</code></pre>
+
+                <p>
+                    Eventually, unrelated entities accumulate inside the same files simply because they happen to belong to the same technical layer.
+                </p>
+
+                <p>
+                    The result looks like this:
+                </p>
+
+<pre><code class="language-python"># tables_bus.py
+
 class DimWarehouseDetails(BaseTable):
     __tablename__ = "dim_warehouse_details"
+
     warehouse_sk = Column(BigInteger, primary_key=True)
     warehouse_id = Column(String)
     region = Column(String)
-    # ...42 more columns
+    # ... 42 more columns
+
 
 class FactOrderFulfillment(BaseTable):
     __tablename__ = "fact_order_fulfillment"
+
     order_fulfillment_sk = Column(BigInteger, primary_key=True)
-    warehouse_sk = Column(BigInteger, ForeignKey("dim_warehouse_details.warehouse_sk"))
-    # ...18 more columns
+    warehouse_sk = Column(
+        BigInteger,
+        ForeignKey("dim_warehouse_details.warehouse_sk")
+    )
+    # ... 18 more columns
+
 
 class FactInventoryMovement(BaseTable):
     __tablename__ = "fact_inventory_movement"
-    # ...another unrelated table, same file
-</code></pre>
+
+    # another unrelated table</code></pre>
+
+                <p>
+                    These tables may have dependencies at the data level.
+                </p>
+
+                <p>
+                    That does not mean their implementation code needs to live together.
+                </p>
+
+                <h2>The Practical Cost</h2>
+
+                <p>
+                    The cost was not theoretical architecture purity. It showed up during ordinary development.
+                </p>
+
+                <h3>Two-file navigation</h3>
+
+                <p>
+                    A change to one table often required edits in multiple large files.
+                </p>
+
+                <p>
+                    The relevant code was connected by convention:
+                </p>
+
+<pre><code class="language-text">FactOrderFulfillment
+        ↓
+find the matching function somewhere else
+        ↓
+build_fact_order_fulfillment()</code></pre>
+
+                <p>
+                    The developer had to reconstruct that relationship every time.
+                </p>
+
+                <h3>Merge conflicts between unrelated work</h3>
+
+                <p>
+                    Two engineers could modify completely unrelated tables and still collide because both changes happened inside:
+                </p>
+
+<pre><code class="language-text">tables_bus.py</code></pre>
+
+                <p>
+                    The conflict itself was often easy to resolve.
+                </p>
+
+                <p>
+                    The annoying part was the review.
+                </p>
+
+                <p>
+                    After resolving it, you had to verify that unrelated definitions had not been accidentally reordered, duplicated, or modified.
+                </p>
+
+                <p>
+                    The repository structure created coupling that did not exist in the business logic.
+                </p>
+
+                <h3>File size became a proxy for table count</h3>
+
+                <p>
+                    The more tables we added, the larger the shared files became.
+                </p>
+
+                <p>
+                    There was no natural boundary.
+                </p>
+
+                <p>
+                    The organizing rule was effectively:
+                </p>
+
+                <blockquote>Keep putting tables here because they belong to the bus layer.</blockquote>
+
+                <p>
+                    That works until "the bus layer" becomes a category containing dozens of unrelated implementation units.
+                </p>
 
                 <h2>The Alternatives</h2>
 
                 <p>
-                    <strong>Split by layer, keep splitting by layer.</strong> The lighter-touch option was simply breaking the 639-line file into several smaller layer-scoped files — fact tables in one file, dimension tables in another. This helps at the margin, but it doesn't fix the underlying problem: a table's schema and its transformation logic still live in two different files, in two different directories, connected only by matching names, and every table still shares a file with several others it has no actual relationship to.
+                    We considered several ways to split the code.
+                </p>
+
+                <h3>1. Keep grouping by layer, but split the files</h3>
+
+                <p>
+                    The smallest change would have been something like:
+                </p>
+
+<pre><code class="language-text">bus/
+├── fact_tables.py
+├── dimension_tables.py
+└── transformations.py</code></pre>
+
+                <p>
+                    This improves file size.
                 </p>
 
                 <p>
-                    <strong>One file per table, transformations still centralized.</strong> Split the table-definitions file into one file per table, but leave the transformation script as a single per-layer orchestration file. This solves half the problem — finding a table's schema gets trivial — but the transformation logic, which is usually where the actual business rules and the actual bugs live, stays exactly as tangled as before.
+                    But it does not change the underlying relationship.
                 </p>
 
                 <p>
-                    <strong>Folder per entity, colocating schema and transformation.</strong> Give every table its own folder containing both its schema definition and its transformation logic, with the per-layer script reduced to orchestration — calling each entity's transformation function in the right order, not containing the logic itself.
+                    A table's schema and transformation logic still live in different places.
                 </p>
 
-                <h2>The Decision</h2>
+                <p>
+                    You still navigate by asking:
+                </p>
+
+                <blockquote>Which shared file contains the part I need?</blockquote>
 
                 <p>
-                    The third option is what shipped, and the folder structure makes the reasoning legible on its own:
+                    rather than:
+                </p>
+
+                <blockquote>Where does this entity live?</blockquote>
+
+                <h3>2. One file per table, centralized transformations</h3>
+
+                <p>
+                    Another option was:
+                </p>
+
+<pre><code class="language-text">bus/
+├── data/
+│   ├── dim_warehouse_details.py
+│   ├── fact_order_fulfillment.py
+│   └── fact_inventory_movement.py
+│
+└── transformations.py</code></pre>
+
+                <p>
+                    Finding schemas becomes trivial.
+                </p>
+
+                <p>
+                    But the transformation file still grows indefinitely.
+                </p>
+
+                <p>
+                    And that is often where the most interesting logic lives:
+                </p>
+
+                <ul>
+                    <li>joins</li>
+                    <li>validation</li>
+                    <li>normalization</li>
+                    <li>surrogate key generation</li>
+                    <li>business rules</li>
+                    <li>data quality decisions</li>
+                </ul>
+
+                <p>
+                    We would have solved only half of the problem.
+                </p>
+
+                <h3>3. Folder per entity</h3>
+
+                <p>
+                    The option we chose was to make the entity the primary organizational boundary.
+                </p>
+
+                <p>
+                    Each table gets its own module containing the code that belongs to that table.
                 </p>
 
 <pre><code class="language-text">warehouse_ops_report/
-├── 02_stage_to_bus.py                  # orchestration only: import + call, in order
+├── 02_stage_to_bus.py
+│
 └── bus/
-    ├── data/
-    │   ├── dim_warehouse_details.py     # schema for this one table
-    │   ├── fact_order_fulfillment.py
-    │   └── fact_inventory_movement.py
     ├── dim_warehouse_details/
-    │   └── transformations.py          # business logic for this one table
-    ├── fact_order_fulfillment/
+    │   ├── data.py
     │   └── transformations.py
+    │
+    ├── fact_order_fulfillment/
+    │   ├── data.py
+    │   └── transformations.py
+    │
     └── fact_inventory_movement/
+        ├── data.py
         └── transformations.py</code></pre>
 
                 <p>
-                    Touching <code>fact_order_fulfillment</code> now means opening one folder — its schema and its transformation are physically next to each other, not connected by a naming convention across two large files. The orchestration script that used to hold 394 lines of transformation logic shrank to a sequence of function calls, one per entity, in dependency order:
+                    Now the question:
                 </p>
 
-<pre><code class="language-python"># 02_stage_to_bus.py — after
-from bus.dim_warehouse_details.transformations import build_dim_warehouse_details
-from bus.fact_order_fulfillment.transformations import build_fact_order_fulfillment
-from bus.fact_inventory_movement.transformations import build_fact_inventory_movement
+                <blockquote>Where is the code for <code>fact_order_fulfillment</code>?</blockquote>
+
+                <p>
+                    has an obvious answer:
+                </p>
+
+<pre><code class="language-text">bus/fact_order_fulfillment/</code></pre>
+
+                <p>
+                    The schema and transformation logic are colocated because they usually change together.
+                </p>
+
+                <p>
+                    This was the key architectural decision.
+                </p>
+
+                <h2>The Layer Became Orchestration</h2>
+
+                <p>
+                    Once the entity owned its own implementation, the layer-level script no longer needed to contain the business logic.
+                </p>
+
+                <p>
+                    It only needed to orchestrate execution.
+                </p>
+
+                <p>
+                    Before, <code>02_stage_to_bus.py</code> contained hundreds of lines of transformations.
+                </p>
+
+                <p>
+                    After the refactor, it became intentionally boring:
+                </p>
+
+<pre><code class="language-python">from bus.dim_warehouse_details.transformations import (
+    build_dim_warehouse_details,
+)
+
+from bus.fact_order_fulfillment.transformations import (
+    build_fact_order_fulfillment,
+)
+
+from bus.fact_inventory_movement.transformations import (
+    build_fact_inventory_movement,
+)
+
 
 def run(spark, cfg):
-    build_dim_warehouse_details(spark, cfg)     # dimension first
-    build_fact_order_fulfillment(spark, cfg)    # depends on the dimension above
+    build_dim_warehouse_details(spark, cfg)
+
+    build_fact_order_fulfillment(spark, cfg)
+
     build_fact_inventory_movement(spark, cfg)</code></pre>
 
-                <div class="flow-diagram">
-                    <div class="flow-diagram__node">Change: add a column to fact_order_fulfillment</div>
-                    <div class="flow-diagram__arrow"></div>
-                    <div class="flow-diagram__node">bus/fact_order_fulfillment/<small>data.py + transformations.py, same folder</small></div>
-                </div>
-
                 <p>
-                    The net effect on the codebase's size was the counter-intuitive part. Splitting eleven tables and their transformations into more than a hundred small files sounds like it should add code — boilerplate imports, more file headers, more scaffolding. It didn't. The change removed more lines than it added, because a large fraction of what made the original files large wasn't unique logic — it was near-identical boilerplate repeated eleven times with minor variations, and once each table had its own small, focused file, the repetition became visible enough to actually collapse.
+                    The orchestration layer now answers a single question:
                 </p>
 
-                <h2>The Second Pass: What Splitting Made Visible</h2>
+                <blockquote>What runs, and in what order?</blockquote>
 
                 <p>
-                    Folder-per-entity solved the navigation and merge-conflict problem, but it surfaced a different one: with each stage-layer transformation now isolated in its own small file, it became obvious that several of them contained nearly identical column-validation and date-parsing code, copy-pasted from table to table with small variations nobody had cleaned up. Nine separate staging transformations — covering source feeds from receiving, inventory location, and task-tracking tables — each had their own slightly-different version of "check this column isn't null," "normalize this header string," "parse this date format."
+                    The entity modules answer a different question:
                 </p>
 
-<pre><code class="language-python"># Before: nearly identical logic, duplicated across nine files
-# stg/warehouse/transformations.py
-df = df.withColumn("warehouse_id", trim(upper(col("warehouse_id"))))
-df = df.filter(col("warehouse_id").isNotNull())
-
-# stg/task_header/transformations.py — same idea, drifted implementation
-df = df.withColumn("task_id", upper(trim(col("task_id"))))
-df = df.na.drop(subset=["task_id"])</code></pre>
+                <blockquote>How is this table built?</blockquote>
 
                 <p>
-                    That duplication was invisible while it lived inside two 300-plus-line files where nobody was reading the full file at once — folder-per-entity made each transformation small enough that the repetition across files became obvious by inspection. The fix was extracting the shared logic into a small, tested utilities module:
+                    That separation turned out to be more valuable than simply reducing file size.
+                </p>
+
+                <h2>A Change Now Has a Physical Boundary</h2>
+
+                <p>
+                    Consider the same change as before:
+                </p>
+
+                <blockquote>Add a column to <code>fact_order_fulfillment</code>.</blockquote>
+
+                <p>
+                    Previously:
+                </p>
+
+<pre><code class="language-text">tables_bus.py
+        +
+02_stage_to_bus.py</code></pre>
+
+                <p>
+                    Both were shared files containing unrelated entities.
+                </p>
+
+                <p>
+                    After the refactor:
+                </p>
+
+<pre><code class="language-text">bus/
+└── fact_order_fulfillment/
+    ├── data.py
+    └── transformations.py</code></pre>
+
+                <p>
+                    The change starts with the entity.
+                </p>
+
+                <p>
+                    The repository structure reflects the unit of work.
+                </p>
+
+                <p>
+                    This also reduces accidental coupling during development.
+                </p>
+
+                <p>
+                    Two engineers modifying:
+                </p>
+
+<pre><code class="language-text">fact_order_fulfillment/</code></pre>
+
+                <p>
+                    and:
+                </p>
+
+<pre><code class="language-text">fact_inventory_movement/</code></pre>
+
+                <p>
+                    are much less likely to touch the same files.
+                </p>
+
+                <p>
+                    The codebase boundary now matches the change boundary.
+                </p>
+
+                <h2>The Unexpected Result: More Files, Less Code</h2>
+
+                <p>
+                    At first, the refactor looked like it would create a lot of scaffolding.
+                </p>
+
+                <p>
+                    We were splitting eleven tables and their transformations into a much larger number of smaller modules.
+                </p>
+
+                <p>
+                    That usually sounds like:
+                </p>
+
+                <blockquote>More folders + more files = more boilerplate.</blockquote>
+
+                <p>
+                    The opposite happened.
+                </p>
+
+                <p>
+                    The refactor removed more lines than it added.
+                </p>
+
+                <p>
+                    Why?
+                </p>
+
+                <p>
+                    Because the large shared files hid a surprising amount of repeated code.
+                </p>
+
+                <p>
+                    Once each table lived in a focused module, the repeated patterns became much easier to see.
+                </p>
+
+                <p>
+                    That led to a second refactoring pass.
+                </p>
+
+                <h2>What Splitting Made Visible</h2>
+
+                <p>
+                    Folder-per-entity solved the navigation and merge-conflict problems.
+                </p>
+
+                <p>
+                    But it exposed another problem.
+                </p>
+
+                <p>
+                    Several staging transformations contained almost identical logic.
+                </p>
+
+                <p>
+                    Across nine different source feeds, variations of the same operations appeared repeatedly:
+                </p>
+
+                <ul>
+                    <li>normalize an identifier</li>
+                    <li>trim whitespace</li>
+                    <li>uppercase values</li>
+                    <li>remove invalid null records</li>
+                    <li>normalize headers</li>
+                    <li>parse dates</li>
+                </ul>
+
+                <p>
+                    Before the refactor, those patterns were buried inside large files.
+                </p>
+
+                <p>
+                    For example:
+                </p>
+
+<pre><code class="language-python"># stg/warehouse/transformations.py
+
+df = df.withColumn(
+    "warehouse_id",
+    trim(upper(col("warehouse_id")))
+)
+
+df = df.filter(
+    col("warehouse_id").isNotNull()
+)</code></pre>
+
+                <p>
+                    Another transformation implemented essentially the same rule:
+                </p>
+
+<pre><code class="language-python"># stg/task_header/transformations.py
+
+df = df.withColumn(
+    "task_id",
+    upper(trim(col("task_id")))
+)
+
+df = df.na.drop(
+    subset=["task_id"]
+)</code></pre>
+
+                <p>
+                    The implementations were not identical.
+                </p>
+
+                <p>
+                    That was exactly the problem.
+                </p>
+
+                <p>
+                    They had drifted.
+                </p>
+
+                <h2>Extracting the Shared Rule</h2>
+
+                <p>
+                    Once the duplication was visible, the common behavior could be expressed explicitly.
                 </p>
 
 <pre><code class="language-python"># tools/dataframe_utils/dataframe_normalizers.py
-def normalize_identifier_column(df: DataFrame, column: str) -> DataFrame:
-    """Trim and uppercase an identifier column, drop nulls.
 
-    Extracted after the same trim/upper/drop-null sequence turned up,
-    each time slightly differently, across nine staging transformations.
-    """
+def normalize_identifier_column(
+    df: DataFrame,
+    column: str,
+) -> DataFrame:
+    """Normalize an identifier and remove null values."""
+
     return (
-        df.withColumn(column, trim(upper(col(column))))
-          .filter(col(column).isNotNull())
+        df
+        .withColumn(
+            column,
+            trim(upper(col(column))),
+        )
+        .filter(
+            col(column).isNotNull()
+        )
     )</code></pre>
 
                 <p>
-                    Every one of those nine call sites collapsed to a single line calling the shared function, and — because the function was now small, named, and had no Spark session or table dependencies to fake — it got a real unit test, something that wasn't practical when the same logic was buried as five inline lines inside a 100-plus-line per-table transformation function.
+                    The nine transformations that previously implemented their own version of this rule could now call the same function.
+                </p>
+
+                <p>
+                    That had two benefits.
+                </p>
+
+                <p>
+                    First, the business transformations became smaller.
+                </p>
+
+                <p>
+                    Second, the shared behavior became independently testable.
+                </p>
+
+                <p>
+                    The utility has no dependency on:
+                </p>
+
+                <ul>
+                    <li>a specific table</li>
+                    <li>orchestration</li>
+                    <li>a Spark job</li>
+                    <li>a configuration object</li>
+                </ul>
+
+                <p>
+                    It accepts a DataFrame and returns a DataFrame.
+                </p>
+
+                <p>
+                    That makes it practical to test directly.
                 </p>
 
                 <blockquote>
-                    Splitting a monolith by entity doesn't just make each piece easier to find — it makes the duplication between pieces visible for the first time. A 639-line file hides repetition inside its own bulk; eleven 60-line files make the same repetition impossible to miss.
+                    Splitting the monolith did more than make each piece easier to find. It made the duplication between pieces visible.
+                    <br><br>
+                    A 639-line file can hide repetition inside its own bulk. Eleven focused modules make repeated patterns much harder to ignore.
                 </blockquote>
+
+                <h2>The Architectural Lesson</h2>
+
+                <p>
+                    The important change was not simply:
+                </p>
+
+                <blockquote>One folder per table.</blockquote>
+
+                <p>
+                    The broader principle is:
+                </p>
+
+                <blockquote>Organize code around the things that change together.</blockquote>
+
+                <p>
+                    In this pipeline, a table's:
+                </p>
+
+                <ul>
+                    <li>schema</li>
+                    <li>transformation rules</li>
+                    <li>validation</li>
+                    <li>data-quality decisions</li>
+                </ul>
+
+                <p>
+                    are usually part of the same unit of change.
+                </p>
+
+                <p>
+                    The fact that every table happens to pass through the <code>bus</code> layer is less useful as an organizational boundary.
+                </p>
+
+                <p>
+                    The pipeline layer still matters.
+                </p>
+
+                <p>
+                    It defines the data flow:
+                </p>
+
+<pre><code class="language-text">Raw → Stage → Bus → Serve</code></pre>
+
+                <p>
+                    But it no longer needs to be the primary unit of implementation.
+                </p>
+
+                <p>
+                    The layer defines <strong>where the data is in the pipeline</strong>.
+                </p>
+
+                <p>
+                    The entity defines <strong>where the code belongs</strong>.
+                </p>
+
+                <p>
+                    Those are different responsibilities.
+                </p>
 
                 <h2>The Outcome</h2>
 
                 <p>
-                    Neither change altered what the pipeline actually computed — every table produces the same output today as it did before either refactor. What changed was the shape of the codebase:
+                    Neither refactor changed what the pipeline computes.
+                </p>
+
+                <p>
+                    The output remained the same.
+                </p>
+
+                <p>
+                    What changed was the shape of the codebase.
                 </p>
 
                 <ul>
-                    <li><strong>121 files touched, net lines removed</strong> — a rare shape for a refactor usually assumed to add scaffolding, because so much of the original size was repeated boilerplate, not unique logic.</li>
-                    <li><strong>A comparable number of lines added back</strong> in the follow-up utilities pass — but roughly a third of that was new unit test coverage for logic that had never been testable in its original inline, duplicated form.</li>
-                    <li><strong>A schema change to one table now touches one folder</strong>, instead of a careful edit inside a shared file eleven other tables also depend on.</li>
-                    <li><strong>A date-parsing or normalization bug gets fixed once</strong>, in one tested function, instead of nine times with nine slightly different fixes.</li>
+                    <li><strong>121 files touched, with net lines removed.</strong> Much of the original size was repeated boilerplate rather than unique transformation logic.</li>
+                    <li><strong>A follow-up utilities pass added shared abstractions and tests.</strong> A meaningful portion of the new code was test coverage for logic that had previously existed only as duplicated inline implementation.</li>
+                    <li><strong>A schema change to one table now starts in one module</strong>, instead of requiring navigation through multiple shared files containing unrelated tables.</li>
+                    <li><strong>Normalization and parsing bugs can now be fixed once</strong>, in a tested shared utility, instead of being corrected independently across several transformations.</li>
+                    <li><strong>The orchestration layer is now explicit about dependencies.</strong> It describes what runs and in what order instead of also containing the implementation of every transformation.</li>
                 </ul>
+
+                <p>
+                    The codebase now has more files than before.
+                </p>
+
+                <p>
+                    That is intentional.
+                </p>
+
+                <p>
+                    A repository with fewer files is not necessarily simpler if each file contains several unrelated responsibilities.
+                </p>
+
+                <p>
+                    For this pipeline, the useful measure of complexity was not:
+                </p>
+
+                <blockquote>How many files are there?</blockquote>
+
+                <p>
+                    It was:
+                </p>
+
+                <blockquote>How much unrelated code do I need to understand before I can safely change this table?</blockquote>
+
+                <p>
+                    Before the refactor, the answer was often hundreds of lines.
+                </p>
+
+                <p>
+                    After it, the answer is usually:
+                </p>
+
+<pre><code class="language-text">bus/
+└── fact_order_fulfillment/</code></pre>
+
+                <p>
+                    And that is the real reason folder-per-entity worked.
+                </p>
+
+                <p>
+                    The goal was never to maximize the number of modules.
+                </p>
+
+                <p>
+                    It was to make the structure of the repository reflect the structure of change.
+                </p>
 
             </article>
 
