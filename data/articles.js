@@ -189,7 +189,7 @@ window.ARTICLES = [
         title: 'Reading an Nginx Config Line by Line: TLS, Headers, Caching, and SPA Routing',
         desc: 'Content-hashed build assets cached for a year, HTML that stays revalidated, and the security headers and surface-reduction directives that cost nothing to keep on.',
         date: '2026-07-15',
-        readTime: 9,
+        readTime: 11,
         discipline: 'devops',
         tags: ['nginx', 'caching'],
         status: 'published',
