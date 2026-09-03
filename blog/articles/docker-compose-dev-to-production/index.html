@@ -4,17 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Docker Compose From Dev to Production — Oselio Candido</title>
-    <meta name="description" content="A shared infra base, a dev override that runs natively, a production override with CI/CD-injected secrets, and date-partitioned Postgres backups.">
+    <meta name="description" content="A shared infra base file, a dev override that runs the app natively, and a production override with a loopback-only API and CI/CD-injected secrets.">
     <link rel="canonical" href="https://oseliocandido.tech/blog/articles/docker-compose-dev-to-production/">
     <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
     <meta property="og:type" content="article">
     <meta property="og:site_name" content="Oselio Candido">
     <meta property="og:title" content="Docker Compose From Dev to Production — Oselio Candido">
-    <meta property="og:description" content="A shared infra base, a dev override that runs natively, a production override with CI/CD-injected secrets, and date-partitioned Postgres backups.">
+    <meta property="og:description" content="A shared infra base file, a dev override that runs the app natively, and a production override with a loopback-only API and CI/CD-injected secrets.">
     <meta property="og:url" content="https://oseliocandido.tech/blog/articles/docker-compose-dev-to-production/">
     <meta name="twitter:card" content="summary">
     <meta name="twitter:title" content="Docker Compose From Dev to Production — Oselio Candido">
-    <meta name="twitter:description" content="A shared infra base, a dev override that runs natively, a production override with CI/CD-injected secrets, and date-partitioned Postgres backups.">
+    <meta name="twitter:description" content="A shared infra base file, a dev override that runs the app natively, and a production override with a loopback-only API and CI/CD-injected secrets.">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
@@ -47,13 +47,13 @@
             <div class="article-page__header">
                 <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
                 <span class="article-page__tag">DevOps &amp; CI/CD</span>
-                <h1 class="article-page__title">Docker Compose From Dev to Production (and Backups)</h1>
+                <h1 class="article-page__title">Docker Compose From Dev to Production: Sharing Infrastructure Without Sharing Everything</h1>
                 <div class="article-page__meta">
                     <span>Oselio Candido</span>
                     <span>·</span>
                     <span>Jul 2026</span>
                     <span>·</span>
-                    <span>9 min read</span>
+                    <span>7 min read</span>
                 </div>
             </div>
 
@@ -61,7 +61,6 @@
 
                 <h2>The problem: keeping dev and prod consistent</h2>
                 <p>The real risk isn't that development and production run on different machines — it's that their infrastructure quietly stops being the same thing. A Postgres version gets bumped in one place and not the other, a healthcheck interval gets tuned in dev and never carried over, and nobody notices until a bug only reproduces in one environment. Docker Compose already solves consistency at the container level; the missing piece is making sure the <em>definitions</em> stay consistent too, instead of hand-maintaining near-duplicate files that are free to drift apart.</p>
-                <p>Backups fall out of the same idea. If the backup routine is just another service in the same compose file, versioned and reviewed the same way as everything else, restoring or auditing it doesn't require separate infrastructure or a bespoke script living outside the stack — running a backup is the same <code>docker compose</code> command as running anything else.</p>
                 <p>Development and production need the same underlying engines — the same database, the same cache — but almost nothing else the same:</p>
                 <ul>
                     <li><strong>Development</strong> needs the database reachable directly from a laptop while application code runs natively, with hot reload and a debugger attached.</li>
@@ -173,38 +172,7 @@ services:
                     <li><strong>Decoupled frontend assets</strong> — the frontend service doesn't serve anything itself. It builds static assets straight into a volume the edge server reads from, with no runtime container in the request path.</li>
                 </ul>
 
-                <h2>One-shot tasks: Compose profiles for backups</h2>
-                <p>Database backups need to be version-controlled, tested, and reviewed alongside the rest of the infrastructure — but they shouldn't run continuously as part of the core stack. A Compose <em>profile</em> solves this cleanly: the service is defined in the file like everything else, but it doesn't start on a plain <code>up</code>:</p>
-                <pre><code class="language-yaml">  backup_postgres:
-    image: postgres:15.13-alpine3.22
-    profiles: ["backup"]
-    env_file:
-      - ../env/prd.env
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      DAY: ${DAY}
-      MONTH: ${MONTH}
-      YEAR: ${YEAR}
-    entrypoint: ["/bin/sh", "-c", "
-      apk add --no-cache aws-cli &&
-      pg_dump -h db -U $$POSTGRES_USER -F c $$POSTGRES_DB | gzip > /backups/$$POSTGRES_DB_$$YEAR-$$MONTH-$$DAY.dump.gz &&
-      aws s3 cp /backups/$$POSTGRES_DB_$$YEAR-$$MONTH-$$DAY.dump.gz s3://$${AWS_S3_BUCKET_NAME}/postgres/$$YEAR/$$MONTH/$${DAY}/$$POSTGRES_DB.dump.gz"]</code></pre>
-                <p>It only runs when explicitly requested by cron or a manual command:</p>
-                <pre><code class="language-bash">docker compose -f docker-compose.yml -f docker-compose.prd.yml --profile backup run backup_postgres</code></pre>
-                <p>That's the right primitive for anything that should be defined once and tested like the rest of the stack, but shouldn't be part of the steady-state footprint of every deploy — one-shot jobs, backups, migrations.</p>
-                <blockquote>The image contains code, not configuration — promoting a build is re-pointing the same containers at a different env file, not rebuilding them.</blockquote>
-
-                <h2>How the backup itself works</h2>
-                <p>The <code>backup_postgres</code> service runs a disposable Postgres container — same image and version as <code>db</code>, so <code>pg_dump</code> is always talking to itself across matching client/server versions — that reaches <code>db</code> over the internal network, dumps in custom format, compresses it, and ships it out:</p>
-                <ul>
-                    <li><strong>Custom format, not plain SQL</strong> — <code>pg_dump -F c</code> produces Postgres's own compressed archive format, which <code>pg_restore</code> can replay selectively (one table, one schema) instead of forcing an all-or-nothing restore of a giant SQL file.</li>
-                    <li><strong>Date-partitioned object keys</strong> — <code>$YEAR/$MONTH/$DAY/</code> in the S3 key means listing or expiring backups by age is a prefix operation, not something that requires parsing filenames.</li>
-                    <li><strong>Runs where the data already is</strong> — the container is on the same internal network as <code>db</code>, so the dump never crosses a public network boundary before it's compressed and encrypted in transit to object storage.</li>
-                    <li><strong>Disposable by design</strong> — the container installs its own tooling (<code>aws-cli</code>) on start and exits when the dump finishes; there's no long-running backup agent to patch or babysit.</li>
-                </ul>
-                <p>Restoring is the same idea in reverse: pull the dated object back from storage and run <code>pg_restore</code> against a target database — routine enough, given the format, that it doesn't need its own bespoke tooling beyond what shipped the dump in the first place.</p>
+                <p>Database backups get the same treatment — defined once as another versioned service, not a bespoke script living outside the stack — covered separately in a companion piece on <a href="../postgres-backups-docker-compose/">turning Postgres backups into code</a>.</p>
 
                 <h2>Why not just one file with everything in it</h2>
                 <p>A single compose file with conditionals or duplicated service blocks per environment was the naive alternative, and it was rejected for the same reason two full copies would be: nothing forces the shared parts — the Postgres version, the network name, the healthcheck intervals — to actually stay identical once environment-specific logic is interleaved with them. Splitting into a base file plus overrides makes that impossible to get wrong by construction:</p>
@@ -238,15 +206,9 @@ services:
                             <td><code>up -d</code></td>
                             <td>Locked-down network, containerized app, reverse-proxy in front</td>
                         </tr>
-                        <tr>
-                            <td>Maintenance</td>
-                            <td><code>docker-compose.yml</code> + <code>.prd.yml</code></td>
-                            <td><code>--profile backup run backup_postgres</code></td>
-                            <td>On-demand database dump to object storage</td>
-                        </tr>
                     </tbody>
                 </table>
-                <p>Dev gets a database and cache it can hit from a laptop with a debugger attached to native code; production gets the exact same infrastructure plus the containerized app, a loopback-only API, and a backup job that only runs when asked — all without a single line of shared configuration duplicated between them.</p>
+                <p>Dev gets a database and cache it can hit from a laptop with a debugger attached to native code; production gets the exact same infrastructure plus the containerized app and a loopback-only API — all without a single line of shared configuration duplicated between them.</p>
 
             </article>
 

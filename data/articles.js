@@ -295,12 +295,23 @@ window.ARTICLES = [
     },
     {
         slug: 'docker-compose-dev-to-production',
-        title: 'Docker Compose From Dev to Production (and Backups)',
-        desc: 'A shared infra base with Postgres and Redis, a dev override that runs the app natively, a production override with secrets injected by CI/CD, and a date-partitioned Postgres backup behind a Compose profile.',
+        title: 'Docker Compose From Dev to Production: Sharing Infrastructure Without Sharing Everything',
+        desc: 'A shared infra base with Postgres and Redis, a dev override that runs the app natively, and a production override with a loopback-only API and secrets injected by CI/CD.',
         date: '2026-07-15',
-        readTime: 9,
+        readTime: 7,
         discipline: 'devops',
         tags: ['nginx'],
+        status: 'published',
+        featured: false
+    },
+    {
+        slug: 'postgres-backups-docker-compose',
+        title: 'Database Backups as Code: PostgreSQL Dumps with Docker Compose',
+        desc: 'Postgres backups as a versioned Compose profile — a disposable pg_dump container, date-partitioned S3 keys, and the honest gap: restore has never actually been exercised.',
+        date: '2026-07-15',
+        readTime: 5,
+        discipline: 'devops',
+        tags: ['postgres'],
         status: 'published',
         featured: false
     }

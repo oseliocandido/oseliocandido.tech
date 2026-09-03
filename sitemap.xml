@@ -104,4 +104,8 @@
     <loc>https://oseliocandido.tech/blog/articles/docker-compose-dev-to-production/</loc>
     <lastmod>2026-07-15</lastmod>
   </url>
+  <url>
+    <loc>https://oseliocandido.tech/blog/articles/postgres-backups-docker-compose/</loc>
+    <lastmod>2026-07-15</lastmod>
+  </url>
 </urlset>

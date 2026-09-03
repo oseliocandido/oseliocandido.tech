@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Database Backups as Code — Oselio Candido</title>
+    <meta name="description" content="Postgres backups as a versioned Compose profile — a disposable pg_dump container, date-partitioned S3 keys, and the honest gap: restore has never actually been exercised.">
+    <link rel="canonical" href="https://oseliocandido.tech/blog/articles/postgres-backups-docker-compose/">
+    <link rel="icon" type="image/svg+xml" href="../../../favicon.svg">
+    <meta property="og:type" content="article">
+    <meta property="og:site_name" content="Oselio Candido">
+    <meta property="og:title" content="Database Backups as Code — Oselio Candido">
+    <meta property="og:description" content="Postgres backups as a versioned Compose profile — a disposable pg_dump container, date-partitioned S3 keys, and the honest gap: restore has never actually been exercised.">
+    <meta property="og:url" content="https://oseliocandido.tech/blog/articles/postgres-backups-docker-compose/">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Database Backups as Code — Oselio Candido">
+    <meta name="twitter:description" content="Postgres backups as a versioned Compose profile — a disposable pg_dump container, date-partitioned S3 keys, and the honest gap: restore has never actually been exercised.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="../../../css/style.css">
+    <link rel="stylesheet" href="../../../css/components.css">
+    <link rel="stylesheet" href="../../../css/article.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+</head>
+<body>
+
+    <!-- Navigation -->
+    <nav class="nav">
+        <div class="nav__progress" id="navProgress"></div>
+        <div class="nav__inner">
+            <a href="../../../" class="nav__logo">OC</a>
+            <ul class="nav__links">
+                <li><a href="../../../">Home</a></li>
+                <li><a href="../../../#about">About</a></li>
+                <li><a href="../../../blog/">Articles</a></li>
+                <li><a href="../../../#contact">Contact</a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <!-- Article -->
+    <main class="article-page">
+        <div class="container">
+
+            <div class="article-page__header">
+                <a href="../../../blog/" class="article-page__back">← Back to Articles</a>
+                <span class="article-page__tag">DevOps &amp; CI/CD</span>
+                <h1 class="article-page__title">Database Backups as Code: PostgreSQL Dumps with Docker Compose</h1>
+                <div class="article-page__meta">
+                    <span>Oselio Candido</span>
+                    <span>·</span>
+                    <span>Jul 2026</span>
+                    <span>·</span>
+                    <span>5 min read</span>
+                </div>
+            </div>
+
+            <article class="article-page__body">
+
+                <h2>The problem</h2>
+                <p>A backup routine that lives outside the rest of the infrastructure — a cron entry on the host, a script nobody reviews, credentials typed into a shell once and forgotten — doesn't get the things version-controlled infrastructure gets for free: a diff when it changes, a review before it ships, and a single place to read to know exactly what it does. If the backup is just another service definition in the same Compose stack described in a companion piece on <a href="../docker-compose-dev-to-production/">Docker Compose from dev to production</a>, running or auditing it is the same <code>docker compose</code> command as running anything else in that stack, not a separate piece of infrastructure with its own rules.</p>
+                <p>The constraint that shapes the rest of this is that a backup job shouldn't be part of the stack's steady-state footprint. It has no business starting on every <code>docker compose up</code>, holding a connection open, or running as a long-lived process at all — it needs to exist, be reviewable, and run on demand or on a schedule, and otherwise not be there.</p>
+
+                <h2>Compose profiles: defined once, not always running</h2>
+                <p>A Compose <em>profile</em> is the primitive for exactly that: the service is defined in the file like everything else, but it doesn't start on a plain <code>up</code>. It only runs when a profile is explicitly requested:</p>
+                <pre><code class="language-yaml">  backup_postgres:
+    image: postgres:15.13-alpine3.22
+    profiles: ["backup"]
+    env_file:
+      - ../env/prd.env
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DAY: ${DAY}
+      MONTH: ${MONTH}
+      YEAR: ${YEAR}
+    entrypoint: ["/bin/sh", "-c", "
+      apk add --no-cache aws-cli &&
+      pg_dump -h db -U $$POSTGRES_USER -F c $$POSTGRES_DB | gzip > /backups/$$POSTGRES_DB_$$YEAR-$$MONTH-$$DAY.dump.gz &&
+      aws s3 cp /backups/$$POSTGRES_DB_$$YEAR-$$MONTH-$$DAY.dump.gz s3://$${AWS_S3_BUCKET_NAME}/postgres/$$YEAR/$$MONTH/$${DAY}/$$POSTGRES_DB.dump.gz"]</code></pre>
+                <p>Triggering it, whether from cron or by hand, is one command against the same files and env layering the rest of the stack already uses:</p>
+                <pre><code class="language-bash">docker compose -f docker-compose.yml -f docker-compose.prd.yml --profile backup run backup_postgres</code></pre>
+                <p>That's the right primitive for anything that should be defined once and reviewed like the rest of the stack, but shouldn't be part of every deploy's steady-state footprint — one-shot jobs, backups, migrations all fit the same shape.</p>
+                <blockquote>A profile is infrastructure that exists on paper all the time and as a running process almost none of the time — which is exactly what a backup job should be.</blockquote>
+
+                <h2>How the backup itself works</h2>
+                <p>The <code>backup_postgres</code> service runs a disposable Postgres container that reaches <code>db</code> over the internal network, dumps in custom format, compresses it, and ships it out:</p>
+                <ul>
+                    <li><strong>Same image as the database</strong> — the backup container uses the same PostgreSQL image and version as <code>db</code>, which keeps the <code>pg_dump</code> client version aligned with the server version rather than leaving that to whatever Postgres client happens to be installed wherever the job runs.</li>
+                    <li><strong>Custom format, not plain SQL</strong> — <code>pg_dump -F c</code> produces Postgres's own compressed archive format, designed to be restored selectively (one table, one schema) rather than only as an all-or-nothing SQL script.</li>
+                    <li><strong>Date-partitioned object keys</strong> — <code>$YEAR/$MONTH/$DAY/</code> in the S3 key means listing or expiring backups by age is a prefix operation, not something that requires parsing filenames.</li>
+                    <li><strong>Runs where the data already is</strong> — the container sits on the same internal network as <code>db</code>, so the dump never crosses a public network boundary while it's being produced; <code>pg_dump -F c</code> already compresses it before it ever leaves the container, and the separate <code>aws s3 cp</code> transfer to object storage is encrypted in transit over TLS — two different mechanisms doing two different jobs, not one.</li>
+                    <li><strong>Disposable by design</strong> — the container installs its own tooling (<code>aws-cli</code>) on start and exits when the dump finishes; there's no long-running backup agent to patch or babysit.</li>
+                </ul>
+                <blockquote>The image contains code, not configuration — the same profile definition, pointed at a different env file, is what makes this job identical in dev, staging, or production; only which bucket and which database it talks to changes.</blockquote>
+
+                <h2>The outcome — and the part that isn't finished</h2>
+                <p>What exists today is a backup that's version-controlled, reviewable, and runs identically wherever the stack runs: one Compose profile, one image, one command, a dated object landing in S3 on schedule. That's a real improvement over a bespoke script living outside the rest of the infrastructure, and it's honest to say so.</p>
+                <p>What doesn't exist yet is a tested restore path. The dump lands in S3 and is trusted to be usable, but that trust has never actually been exercised end-to-end — nobody has pulled one of these archives back down and restored it into a database to confirm it works. That's the same kind of gap as the manual <code>prd.env</code> editing named in the companion piece: a known, named limitation of what's running today rather than something quietly assumed to be fine. A backup that has never been restored is a belief, not a guarantee, and closing that gap — proving the restore path works, not just the backup path — is the next real piece of work here, not an afterthought.</p>
+
+            </article>
+
+        </div>
+    </main>
+
+    <footer class="footer">
+        <div class="container">
+            <p>© 2026 Oselio Candido &nbsp;·&nbsp; <a href="../../../">← Back to portfolio</a></p>
+        </div>
+    </footer>
+
+    <script>
+    (function () {
+        var progressBar = document.getElementById('navProgress');
+        if (!progressBar) return;
+        function updateProgress() {
+            var scrollTop = window.scrollY;
+            var docHeight = document.documentElement.scrollHeight - window.innerHeight;
+            var pct = docHeight > 0 ? (scrollTop / docHeight) * 100 : 0;
+            progressBar.style.width = pct + '%';
+        }
+        window.addEventListener('scroll', updateProgress, { passive: true });
+        window.addEventListener('resize', updateProgress);
+        updateProgress();
+    })();
+    </script>
+</body>
+</html>
